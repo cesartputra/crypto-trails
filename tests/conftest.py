@@ -28,7 +28,7 @@ def scenarios(client):
 def trace(client, scenarios):
     def run(scenario_id):
         response = client.post(
-            "/api/v1/trail/trace-report", json=scenarios[scenario_id]["report"]
+            "/api/v1/trail/trace-report", json=scenarios[scenario_id]["handoff"]
         )
         assert response.status_code == 200, response.text
         return response.json()

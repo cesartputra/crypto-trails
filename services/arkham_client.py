@@ -121,7 +121,7 @@ class ArkhamClient:
             else:
                 fraction = tainted_received[wallet_id] / (amount + clean) if amount + clean else D(0)
             pct = min(fraction * 100, D(100))
-            metadata = {**w, "evidence_source": "SYNTHETIC_ARKHAM_INTELLIGENCE", "arkham_entity_profile": w["label"],
+            metadata = {**w, "evidence_source": "SYNTHETIC_ARKHAM_INTELLIGENCE", "architecture_zone": "Zona 3: On-Chain Crypto Trails (Arkham Intelligence API)", "arkham_entity_profile": w["label"],
                         "taint_model": "proportional_chronological_stock", "onchain_hop": hops[wallet_id],
                         "is_initial_wallet": wallet_id == initial, "tainted_balance_crypto": str(balance * fraction),
                         "calculated_remaining_crypto": str(funds[wallet_id]), "cumulative_received_crypto": str(amount),
@@ -132,7 +132,7 @@ class ArkhamClient:
                 address=w["address"], chain=ramp["chain"], asset=ramp["asset"], crypto_amount=amount,
                 amount_idr=tainted_received[wallet_id] * RATE, balance_crypto=balance,
                 taint_score_pct=pct.quantize(D("0.01")), hop=source_hop + 1 + hops[wallet_id], metadata=metadata))
-        tx_hash = ("0x" if ramp["chain"] != "TRON_TRC20" else "") + __import__("hashlib").sha256((scenario["id"] + "-withdrawal").encode()).hexdigest()
+        tx_hash = ramp["withdrawal_tx_hash"]
         next(n for n in nodes if n.id == initial).metadata["tx_hashes"].insert(0, tx_hash)
         edges.append(TrailEdge(id="initial-withdrawal", source="scammer-uid", target=initial, edge_type="EXCHANGE_WITHDRAWAL",
             label=f"Withdraw {ramp['crypto_amount']} {ramp['asset']}", crypto_amount=D(ramp["crypto_amount"]), asset=ramp["asset"],

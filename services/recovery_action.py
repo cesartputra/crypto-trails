@@ -1,89 +1,148 @@
-"""Evidence-bound simulated recovery; deliberately no operational bank or chain writes."""
+"""IASC recommendation dispatch and decisions owned by the receiving institution."""
 from datetime import datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
 import json
-from schemas import RecoveryAction
+from uuid import uuid4
+from schemas import InstitutionFreezeDecision
 from scenarios import RATE
 
 D = Decimal
+FINAL_STATUSES = {"APPROVED_FREEZE_BY_INSTITUTION", "PARTIAL_FREEZE_BY_INSTITUTION", "REJECTED_BY_INSTITUTION"}
 
 
-def plan_recovery(scenario, nodes):
-    actions = []
+class GovernanceConflict(ValueError):
+    pass
+
+
+def plan_governance_requests(scenario, nodes):
+    requests = []
     ramp = scenario["onramp"]
     for node in nodes:
-        if node.node_type == "FINAL_CASHOUT":
-            available = min(D(node.metadata.get("attributed_available_balance_idr", node.metadata["available_balance_idr"])), node.amount_idr)
-            if available:
-                actions.append(RecoveryAction(id="freeze-final-bank", action_type="FREEZE_BANK", node_id=node.id,
-                    label="Auto-Freeze rekening BRI akhir · simulasi", amount_idr=available,
-                    reason="Settlement P2P terhubung ke rekening penerima; batasi sisa saldo yang teramati.",
-                    metadata={"recoverable_contribution_idr": str(available)}))
-        kind = node.metadata.get("terminal_recovery")
-        if kind and node.balance_crypto > 0:
-            exposure = D(node.metadata.get("tainted_balance_crypto", node.balance_crypto))
-            if exposure <= 0:
-                continue
-            actions.append(RecoveryAction(id=f"recovery-{node.id}", action_type=kind, node_id=node.id,
-                label=("Freeze akun PAKD" if kind == "FREEZE_PAKD" else "Generate paket Tether/Circle") + " · simulasi",
-                amount_idr=exposure * RATE, crypto_amount=exposure, asset=node.asset,
-                reason="Sisa saldo terminal teratribusi; tidak menjumlahkan volume transit antar-hop.",
-                metadata={"recoverable_contribution_idr": str(exposure * RATE), "address_wide_token_scope": kind == "ISSUER_BLACKLIST_REQUEST"}))
-    if ramp["kind"] == "P2P":
-        held = D(ramp.get("held_escrow_idr", "0"))
-        actions.append(RecoveryAction(id="targeted-p2p-hold", action_type="TARGETED_ESCROW_HOLD", node_id="escrow",
-            label="Targeted escrow hold & permintaan bukti · simulasi", amount_idr=held or D(scenario["report"]["nominal_transaksi"]),
-            asset="USDT", crypto_amount=held / RATE,
-            reason=("Kunci hanya sisa escrow terkait order ini; rekening bisnis merchant tetap aktif." if held
-                    else "Escrow telah dilepas; preservasi bukti dan hold terbatas bila dana order masih tersedia, bukan pemulihan retroaktif."),
-            metadata={"recoverable_contribution_idr": str(held), "observed_remaining_escrow_idr": str(held),
-                      "merchant_full_account_freeze": False, "order_id": next(o["order_id"] for o in scenario["p2p_orders"] if o["p2p_direction"] == "ON_RAMP_DEPOSIT")}))
-    return actions
+        category, institution, scope, available = None, None, "ACCOUNT_BALANCE", D(0)
+        crypto = D(0)
+        if node.node_type == "MULE":
+            category, institution = "PUJK", node.entity_label
+        elif node.node_type == "FINAL_CASHOUT":
+            category, institution = "PUJK", node.entity_label
+            available = min(D(node.metadata["available_balance_idr"]), D(node.metadata["attributed_available_balance_idr"]))
+        elif node.node_type == "PAKD_USER_ACCOUNT":
+            category, institution = "PAKD", node.entity_label
+        elif node.node_type == "P2P_ESCROW":
+            category, institution, scope = "PAKD", node.entity_label, "TARGETED_ESCROW"
+            available = D(ramp.get("held_escrow_idr", "0"))
+            crypto = available / RATE
+        elif node.metadata.get("recovery_institution") == "PAKD" and node.balance_crypto > 0:
+            category, institution = "PAKD", node.metadata.get("platform", node.entity_label)
+            crypto = D(node.metadata.get("tainted_balance_crypto", node.balance_crypto))
+            available = crypto * RATE
+        elif node.metadata.get("recovery_institution") == "ISSUER" and node.balance_crypto > 0:
+            category, institution, scope = "STABLECOIN_ISSUER_OR_GLOBAL_EXCHANGE", "Tether" if node.asset == "USDT" else "Circle", "ISSUER_REVIEW"
+            crypto = D(node.metadata.get("tainted_balance_crypto", node.balance_crypto))
+            available = crypto * RATE
+        if category is None:
+            continue
+        unit = (f"Tim Anti-Fraud PUJK {institution}" if category == "PUJK" else
+                f"Compliance Officer PAKD {institution}" if category == "PAKD" else f"Compliance Unit {institution}")
+        requests.append(InstitutionFreezeDecision(request_id=f"gov-{node.id}-{uuid4()}", target_node_id=node.id,
+            institution_category=category, institution_name=institution, requested_amount_idr=available,
+            metadata={"request_scope": scope, "available_amount_idr": str(available), "potential_recoverable_amount_idr": str(available),
+                "asset": node.asset, "crypto_amount": str(crypto), "decision_unit": unit,
+                "merchant_full_account_freeze": False, "order_id": node.metadata.get("order_id"),
+                "evidence_preservation_only": available == 0, "simulated_institution_callback_only": True,
+                "note": "Keputusan penundaan/freeze berada pada institusi penerima; IASC hanya mengirim rekomendasi dan bukti."}))
+    return requests
 
 
-def execute_simulated_action(graph, action):
-    node = next(n for n in graph.nodes if n.id == action.node_id)
-    evidence = {"report_id": graph.report_id, "trace_id": graph.trace_id,
-                "node": node.model_dump(mode="json"), "action": action.model_dump(mode="json"),
-                "edges": [e.model_dump(mode="json") for e in graph.edges if e.source == node.id or e.target == node.id],
-                "p2p_orders": [p.model_dump(mode="json") for p in graph.p2p_detections]}
+def build_evidence_packet(graph, request):
+    node = next(n for n in graph.nodes if n.id == request.target_node_id)
+    evidence = {"iasc_ticket_id": graph.iasc_ticket_id, "fna_trail_id": graph.fna_trail_id, "trace_id": graph.trace_id,
+        "fna_handoff": graph.fna_handoff.model_dump(mode="json"),
+        "nodes": [n.model_dump(mode="json") for n in graph.nodes], "edges": [e.model_dump(mode="json") for e in graph.edges],
+        "pakd_trails": [r.model_dump(mode="json") for r in graph.pakd_trails],
+        "p2p_detections": [p.model_dump(mode="json") for p in graph.p2p_detections],
+        "request": request.model_dump(mode="json")}
     digest = sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-    packet = {"classification": "DRAFT_SIMULATION_ONLY", "report_id": graph.report_id, "trace_id": graph.trace_id,
-              "created_at": datetime.now(timezone.utc).isoformat(), "action_type": action.action_type,
-              "target": {"node_id": node.id, "account": node.account, "address": node.address, "chain": node.chain,
-                         "exchange_uid": node.metadata.get("uid")},
-              "evidentiary_exposure_idr": str(action.amount_idr), "evidence_sha256": digest,
-              "evidence": evidence, "required_authority": "Tinjauan penyidik/otoritas berwenang dan persetujuan mitra; bukan surat resmi OJK.",
-              "transmitted": False, "signed": False}
-    if action.action_type == "ISSUER_BLACKLIST_REQUEST":
-        if node.asset not in {"USDT", "USDC"} or node.chain not in {"TRON_TRC20", "ETHEREUM_ERC20"}:
-            raise ValueError("Paket issuer belum didukung untuk token/jaringan ini")
-        issuer = "Tether" if node.asset == "USDT" else "Circle"
-        function = "addBlackList(address)" if node.asset == "USDT" else "blacklist(address)"
+    packet = {"classification": "DRAFT_SIMULATION_ONLY", "request_id": request.request_id,
+        "iasc_ticket_id": graph.iasc_ticket_id, "fna_trail_id": graph.fna_trail_id, "trace_id": graph.trace_id,
+        "created_at": datetime.now(timezone.utc).isoformat(), "evidence_sha256": digest, "evidence": evidence,
+        "target": {"node_id": node.id, "account": node.account, "address": node.address, "chain": node.chain,
+                   "institution_category": request.institution_category, "institution_name": request.institution_name},
+        "requested_amount_idr": str(request.requested_amount_idr), "request_scope": request.metadata["request_scope"],
+        "dispatch_channel": "SIMULATED_IASC_OUTBOX", "transmitted": False, "signed": False,
+        "authority": "IASC mengirim rekomendasi; keputusan dan pelaksanaan hanya oleh PUJK/PAKD/issuer terkait."}
+    if request.metadata["request_scope"] == "TARGETED_ESCROW":
+        packet["targeted_hold"] = {"order_id": request.metadata.get("order_id"),
+            "maximum_hold_idr": str(request.requested_amount_idr), "merchant_full_account_freeze": False,
+            "preserve_order_kyc_and_settlement_evidence": True}
+    if request.metadata["request_scope"] == "ISSUER_REVIEW":
         contract_refs = {("USDT", "ETHEREUM_ERC20"): "0xdAC17F958D2ee523a2206206994597C13D831ec7",
                          ("USDT", "TRON_TRC20"): "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
                          ("USDC", "ETHEREUM_ERC20"): "0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"}
         if (node.asset, node.chain) not in contract_refs:
-            raise ValueError("Token/jaringan belum memiliki referensi kontrak issuer yang didukung")
-        packet["issuer_request"] = {"issuer": issuer, "token": node.asset, "network": node.chain,
-            "contract_reference": contract_refs.get((node.asset, node.chain)), "function_signature": function,
-            "arguments": {"address": node.address}, "expected_event": "AddedBlackList(address)" if node.asset == "USDT" else "Blacklisted(address)",
-            "evidentiary_exposure_crypto": str(action.crypto_amount),
-            "scope": "ADDRESS_WIDE_TOKEN_RESTRICTION", "note": "Jumlah adalah paparan bukti; blacklist issuer membatasi token pada seluruh address, bukan hanya nominal scam. AddedBlackList adalah event, bukan fungsi.",
-            "execution": "ISSUER_PRIVILEGED_ROLE_REQUIRED_NO_TRANSACTION_BROADCAST"}
-        status = "DRAFT_GENERATED"
-        message = "Paket permohonan issuer tersusun. Belum dikirim, ditandatangani, atau dieksekusi di blockchain."
-    elif action.action_type == "TARGETED_ESCROW_HOLD":
-        packet["targeted_hold"] = {"order_id": action.metadata["order_id"], "maximum_hold_idr": str(action.amount_idr),
-            "observed_remaining_escrow_idr": action.metadata["observed_remaining_escrow_idr"],
-            "merchant_full_account_freeze": False, "preserve_order_kyc_and_settlement_evidence": True}
-        status = "SIMULATED_TARGETED_HOLD"
-        message = "Simulasi hold pada order terkait selesai; rekening merchant tidak diblokir total."
+            raise ValueError("Token/jaringan tidak memiliki referensi kontrak issuer yang didukung")
+        packet["issuer_request"] = {"issuer": "Tether" if node.asset == "USDT" else "Circle", "token": node.asset,
+            "network": node.chain, "contract_reference": contract_refs[(node.asset, node.chain)],
+            "function_signature": "addBlackList(address)" if node.asset == "USDT" else "blacklist(address)",
+            "expected_event": "AddedBlackList(address)" if node.asset == "USDT" else "Blacklisted(address)",
+            "arguments": {"address": node.address}, "evidentiary_exposure_crypto": request.metadata["crypto_amount"],
+            "scope": "ADDRESS_WIDE_TOKEN_RESTRICTION",
+            "execution": "ISSUER_PRIVILEGED_ROLE_REQUIRED_NO_TRANSACTION_BROADCAST",
+            "note": "Paket draf untuk review issuer. AddedBlackList adalah event, bukan fungsi. Nominal bukti bukan pembatasan blacklist parsial pada alamat."}
+    return packet
+
+
+def sync_node_decision(graph, request):
+    node = next(n for n in graph.nodes if n.id == request.target_node_id)
+    node.institution_decision = request.model_copy(deep=True)
+    node.status = request.request_status
+    graph.confirmed_frozen_amount_idr = sum((r.approved_frozen_amount_idr for r in graph.governance_requests), D(0))
+
+
+def send_request(graph, request):
+    if request.request_status == "NOT_SENT":
+        request.request_status = "SENT_WAITING_DECISION"
+        request.institution_decision_notes = "Tiket rekomendasi tercatat pada outbox simulasi IASC; menunggu keputusan institusi penerima."
+        sync_node_decision(graph, request)
+    return request
+
+
+def decide_request(graph, request, decision_input):
+    if request.request_status == "NOT_SENT":
+        raise GovernanceConflict("Rekomendasi harus dikirim sebelum keputusan institusi dapat disimulasikan")
+    requested = request.requested_amount_idr
+    available = D(request.metadata["available_amount_idr"])
+    status = decision_input.decision
+    if request.metadata["request_scope"] == "ISSUER_REVIEW" and status == "PARTIAL_FREEZE_BY_INSTITUTION":
+        raise ValueError("Blacklist issuer membatasi token pada seluruh alamat; partial freeze nominal tidak didukung")
+    amount = decision_input.approved_frozen_amount_idr
+    if amount is None:
+        amount = requested if status == "APPROVED_FREEZE_BY_INSTITUTION" else min(requested, available) / 2 if status == "PARTIAL_FREEZE_BY_INSTITUTION" else D(0)
+        amount = amount.quantize(D("0.01"))
+    if status == "APPROVED_FREEZE_BY_INSTITUTION":
+        if requested <= 0 or amount != requested or amount > available:
+            raise ValueError("Persetujuan penuh wajib sama dengan nominal diminta dan tidak melebihi saldo eligible")
+        default_notes = "Institusi menyetujui rekomendasi dan melaporkan saldo diamankan dalam callback simulasi."
+    elif status == "PARTIAL_FREEZE_BY_INSTITUTION":
+        if not D(0) < amount < requested or amount > available:
+            raise ValueError("Freeze sebagian harus positif, lebih kecil dari nominal diminta, dan tidak melebihi saldo eligible")
+        default_notes = "Institusi melaporkan hanya sebagian saldo dapat diamankan dalam callback simulasi."
     else:
-        packet["freeze_request"] = {"maximum_amount_idr": str(action.amount_idr), "scope": "IDENTIFIED_TERMINAL_ACCOUNT_ONLY"}
-        status = "SIMULATED_FROZEN"
-        message = "Simulasi pembekuan saldo rekening/akun terminal selesai; tidak ada instruksi dikirim ke mitra."
-    node.status = status
-    action.status = status
-    return {"action_id": action.id, "status": status, "simulation": True, "message": message, "packet": packet, "node_id": node.id}
+        if amount != 0:
+            raise ValueError("Keputusan penolakan tidak boleh mengakui nominal beku")
+        default_notes = "Institusi menolak: saldo tidak tersedia pada saat review simulasi; lanjutkan penelusuran atau permintaan bukti."
+    notes = decision_input.institution_decision_notes or default_notes
+    if request.request_status in FINAL_STATUSES:
+        if request.request_status != status or request.approved_frozen_amount_idr != amount or request.institution_decision_notes != notes:
+            raise GovernanceConflict("Keputusan final tidak dapat ditimpa; callback ulang harus identik")
+        return request
+    projected = sum((r.approved_frozen_amount_idr for r in graph.governance_requests if r.request_id != request.request_id), D(0)) + amount
+    if projected > graph.recoverable_amount_idr:
+        raise ValueError("Total keputusan melampaui saldo eligible yang teratribusi")
+    request.request_status = status
+    request.approved_frozen_amount_idr = amount
+    request.institution_decision_notes = notes
+    request.decided_by_unit = request.metadata["decision_unit"]
+    request.decision_timestamp = datetime.now(timezone.utc)
+    sync_node_decision(graph, request)
+    return request

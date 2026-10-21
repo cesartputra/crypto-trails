@@ -7,3 +7,67 @@
 .manual-button{display:block;width:100%;border:1px dashed #2b4059;background:#0c1725;color:#819bb8;border-radius:4px;padding:8px 10px;font-size:8px;text-align:center;margin:-8px 0 17px}.manual-button:hover,.manual-button.active{border-color:#468492;color:var(--cyan);background:#102b37}
 .graph-scroll{position:absolute;inset:0;overflow:auto;scrollbar-width:thin;scrollbar-color:#2c405c transparent}.graph-board .graph-scroll svg{position:relative;display:block;width:100%;height:auto;min-height:100%;inset:auto}.node .node-label{font-size:13px}.node .node-subtitle{font-size:10px}.node .taint-label{font-size:9px}.edge-label{font-size:10px}.graph-watermark{opacity:.65}.graph-scroll:after{content:"Scroll untuk jelajah · Ctrl + scroll untuk zoom";position:absolute;top:11px;left:14px;color:#3f5975;font-size:7px;letter-spacing:.3px;pointer-events:none}
 .graph-board,.graph-board svg{touch-action:pan-y}
+
+/* Governance keeps requested exposure separate from institution-confirmed funds. */
+.metrics{grid-template-columns:repeat(5,minmax(0,1fr))}
+.metric strong{font-size:22px}
+.recovery-metric{border-color:#31526a;background:linear-gradient(100deg,#10243088,#0d1921)}
+.recovery-metric strong,.recovery-metric .metric-symbol{color:var(--cyan)}
+.confirmed-metric{border-color:#285448;background:linear-gradient(100deg,#10251f88,#0d1921)}
+.confirmed-metric strong,.confirmed-metric .metric-symbol{color:var(--green)}
+.workspace{grid-template-columns:255px minmax(0,1fr) 330px}
+.left-panel,.right-panel,.graph-panel{height:830px}
+.page-heading p{max-width:820px;line-height:1.7}
+.case-indicator{max-width:35%;overflow:hidden;text-overflow:ellipsis}
+#case-id{overflow:hidden;text-overflow:ellipsis}
+.rail-guide{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:0;padding:0;background:#0f1a29}
+.rail-guide>span{display:grid;grid-template-columns:5px 1fr;gap:5px 6px;padding:12px 10px;white-space:normal;align-content:center;height:100%;border-right:1px solid var(--border)}
+.rail-guide>span:last-child{border-right:0}
+.rail-guide span b{font-size:8px;font-weight:500;letter-spacing:0;color:#b0c2d8;line-height:1.4}
+.rail-guide span small{font-size:7px;line-height:1.4;letter-spacing:0;grid-column:2;color:#627e9e}
+.rail-guide span i{margin-top:4px}
+.rail-guide .innovation-zone{background:#6b4a1418;box-shadow:inset 0 -2px #b8873a55}
+.rail-guide .innovation-zone b{color:var(--amber)}
+.decision-node-badge{text-anchor:middle;font-size:7px;letter-spacing:.4px;font-weight:600}
+.status-pill{line-height:1.4;letter-spacing:.2px}
+.status-pill.decision-not-sent{color:#8196b0;border-color:#38506a;background:#142030}
+.status-pill.decision-waiting,.status-pill.decision-partial{color:var(--amber);border-color:#8c6d3855;background:#72531a22}
+.status-pill.decision-rejected{color:var(--red);border-color:#974c5f66;background:#6a263122}
+.status-pill.decision-approved{color:var(--green);border-color:#3b846855;background:#27674b22}
+.governance-target-label{font-size:9px;margin-top:13px;color:#8ca4c0}
+select,textarea{font:inherit;display:block;width:100%;border:1px solid #2b4059;border-radius:4px;background:#091522;color:#bbcee3;font-size:10px;padding:9px;margin-top:6px;resize:vertical}
+select:focus-visible,textarea:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+select{min-height:36px;white-space:normal}
+.governance-section #action-list{display:block}
+.governance-card{border:1px solid #263c53;background:#0a1726;border-radius:6px;padding:13px 11px;margin-top:12px}
+.governance-card.decision-approved{border-color:#326950}
+.governance-card.decision-partial,.governance-card.decision-waiting{border-color:#6d5833}
+.governance-card.decision-rejected{border-color:#783d4b}
+.governance-title{margin-bottom:14px}
+.governance-title strong{display:block;font-size:13px;font-weight:500;margin-bottom:10px}
+.governance-title .status-pill{margin-bottom:0}
+.governance-card .detail-list{gap:10px}
+.governance-card .detail-list dd{font-size:10px}
+.governance-card .detail-list dd.detail-highlight{font-size:18px}
+.governance-card .button{width:100%;text-align:left;justify-content:flex-start;font-size:10px;line-height:1.5;padding:10px 9px;margin-top:10px}
+.dispatch-button{background:#133a46;border-color:#2f7180;color:#aee7e9}
+.governance-card .decision-approve{background:#153c2a55;border-color:#2f6a52;color:#96ddb8}
+.governance-card .decision-partial{background:#3a2e1655;border-color:#6f5d37;color:#e3c58d}
+.governance-card .decision-reject{background:#3a1c2655;border-color:#743a4b;color:#eca3b4}
+.governance-card .evidence-download{background:#15283a;border-color:#36506c;color:#8fb5d6;font-size:9px}
+.governance-card label{font-size:9px;margin:12px 0 6px}
+.governance-card input{font-size:11px}
+.governance-stage{font-size:8px;color:#829dbb;letter-spacing:.7px;border-top:1px solid #263b52;margin-top:16px;padding-top:13px}
+.scope-note{font-size:9px;color:#8b9fb5;line-height:1.7;margin-top:12px}
+.pakd-section{border-top:1px solid var(--border);padding:17px 16px}
+.pakd-card{border-left:2px solid #9e7539;border-top:1px solid #493c28;border-right:1px solid #493c28;border-bottom:1px solid #493c28;background:linear-gradient(115deg,#30271844,#14202b55);padding:12px 10px;border-radius:4px;margin-top:13px}
+.pakd-name{display:block;font-size:12px;color:#e3bc78;font-weight:500}
+.pakd-intake{display:block;font-size:7px;color:#a99169;letter-spacing:.4px;margin:6px 0 13px;line-height:1.5}
+.pakd-card .detail-list dd{font-size:10px}
+.inspector .detail-list dd{font-size:10px}
+.inspector .detail-list dd.detail-highlight{font-size:17px}
+button:disabled{cursor:not-allowed}
+@media(min-width:1650px){.workspace{grid-template-columns:275px minmax(0,1fr) 350px}.left-panel,.right-panel,.graph-panel{height:880px}.metric strong{font-size:27px}}
+@media(max-width:1200px){.workspace{grid-template-columns:215px minmax(0,1fr) 285px}.metric strong{font-size:18px}.rail-guide>span{padding:10px 7px}.rail-guide span b{font-size:7px}.rail-guide span small{font-size:6px}.graph-header h2{font-size:14px}}
+@media(max-width:1000px){.workspace{grid-template-columns:210px minmax(0,1fr)}.right-panel{height:auto;max-height:760px}.right-panel .inspector-scroll{grid-template-columns:1fr 1fr}.right-panel .pakd-section,.right-panel .evidence-section{border-top:1px solid var(--border);border-left:0}.right-panel .governance-section{border-left:1px solid var(--border)}.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.metric strong{font-size:21px}.left-panel,.graph-panel{height:760px}.case-indicator{max-width:42%}}
+@media(max-width:700px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.confirmed-metric{grid-column:1/-1}.workspace{display:flex}.left-panel{height:auto}.graph-panel{height:650px}.right-panel{height:auto;max-height:none}.right-panel .inspector-scroll{display:block}.right-panel .governance-section{border-left:0;border-top:1px solid var(--border)}.case-indicator{max-width:100%}.rail-guide span b{font-size:7px}.rail-guide span small{font-size:6px}.rail-guide>span{padding:10px 6px;gap:4px}.graph-header h2{font-size:15px}.report-details summary{font-size:10px;line-height:1.5}.governance-card .detail-list{grid-template-columns:1fr}.pakd-section{padding:18px 20px}}

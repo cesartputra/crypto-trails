@@ -4,85 +4,94 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="theme-color" content="#080d17">
-  <title>IASC · Cross-Rail Intelligence</title>
+  <title>IASC · PAKD Trails & Governance</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%230c1727'/%3E%3Cpath d='M20 6 32 11v10c0 8-12 14-12 14S8 29 8 21V11Z' fill='none' stroke='%2357d8ef' stroke-width='2'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="/static/styles.css">
   <script src="/static/app.js" defer></script>
 </head>
 <body>
   <header class="command-bar">
-    <a class="brand" href="/" aria-label="IASC Cross-Rail Intelligence"><span class="brand-mark" aria-hidden="true">⌘</span><span><b>IASC <span class="brand-divider">/</span> <span class="brand-light">CROSS-RAIL</span></b><small>FINANCIAL CRIME INTELLIGENCE</small></span></a>
-    <div class="command-context"><span class="live-dot"></span> COMMAND CENTER <span class="context-divider">/</span> INVESTIGASI DANA</div>
+    <a class="brand" href="/" aria-label="IASC Cross-Rail Intelligence"><span class="brand-mark" aria-hidden="true">⌘</span><span><b>IASC <span class="brand-divider">/</span> <span class="brand-light">CROSS-RAIL</span></b><small>PAKD TRAILS · DOWNSTREAM EXTENSION</small></span></a>
+    <div class="command-context"><span class="live-dot"></span> COMMAND CENTER <span class="context-divider">/</span> FNA → PAKD → ARKHAM</div>
     <div class="command-right"><span class="simulation-tag">LAB · SIMULASI</span><span class="analyst-avatar" title="Demo analis">IA</span></div>
   </header>
 
   <main>
-    <section class="page-heading"><div><div class="eyebrow">FIAT → CRYPTO → FIAT</div><h1>Ikuti dananya. Temukan titik intersepsi.</h1><p>Intelijen lintas rekening, escrow P2P, dan jaringan blockchain dalam satu investigasi.</p></div><div class="case-indicator"><span class="live-dot"></span><span id="case-id">MEMUAT KASUS</span></div></section>
+    <section class="page-heading"><div><div class="eyebrow">FNA HANDOFF → PAKD TRAILS → ARKHAM</div><h1>Lanjutkan jejak. Hubungkan keputusan.</h1><p>Ekstensi downstream FNA’s Money Trails untuk ledger PAKD dan on-chain. Keputusan freeze ada pada masing-masing institusi.</p></div><div class="case-indicator"><span class="live-dot"></span><span id="case-id">MEMUAT KASUS</span></div></section>
 
     <section class="metrics" aria-label="Ringkasan investigasi" aria-live="polite">
       <article class="metric"><span class="metric-label">TOTAL KERUGIAN <span class="metric-symbol">↗</span></span><strong id="metric-loss">—</strong><small>Nilai laporan korban</small></article>
       <article class="metric"><span class="metric-label">DANA TERLACAK <span class="metric-symbol">⌁</span></span><strong id="metric-traced">—</strong><small id="metric-crypto">— USDT · lintas jalur</small></article>
-      <article class="metric"><span class="metric-label">KEDALAMAN JEJAK <span class="metric-symbol">⋮</span></span><strong id="metric-hops">— <em>hop</em></strong><small>Bank · P2P · On-chain</small></article>
-      <article class="metric recovery-metric"><span class="metric-label">POTENSI DISELAMATKAN <span class="metric-symbol">◈</span></span><strong id="metric-recovery">—</strong><small id="metric-recovery-note">Estimasi skenario sintetis</small></article>
+      <article class="metric"><span class="metric-label">KEDALAMAN JEJAK <span class="metric-symbol">⋮</span></span><strong id="metric-hops">— <em>hop</em></strong><small>FNA · PAKD · Arkham</small></article>
+      <article class="metric recovery-metric"><span class="metric-label">POTENSI RECOVERY <span class="metric-symbol">◈</span></span><strong id="metric-recovery">—</strong><small id="metric-recovery-note">Estimasi skenario sintetis</small></article>
+      <article class="metric confirmed-metric"><span class="metric-label">DISETUJUI INSTITUSI <span class="metric-symbol">✓</span></span><strong id="metric-confirmed">—</strong><small id="metric-confirmed-note">Belum ada keputusan freeze</small></article>
     </section>
 
     <div class="workspace">
       <aside class="left-panel panel">
-        <div class="panel-title"><span class="section-number">01</span><h2>Mulai investigasi</h2></div>
+        <div class="panel-title"><span class="section-number">01</span><h2>Handoff FNA’s Money Trails</h2></div>
         <div class="panel-body">
           <div class="section-caption">SKENARIO DEMONSTRASI <span>4 KASUS</span></div>
           <div id="scenarios" class="scenario-list" aria-label="Pilih skenario"><div class="skeleton">Mengambil skenario…</div></div>
-          <button id="manual-button" class="manual-button" type="button">+ Input laporan manual</button>
+          <button id="manual-button" class="manual-button" type="button">+ Input handoff manual</button>
           <details class="report-details" open>
-            <summary><span>Informasi transaksi</span><small>TAHAP 4 IASC</small><span class="chevron">⌄</span></summary>
+            <summary><span>Input handoff FNA → PAKD & Crypto Trails</span><span class="chevron">⌄</span></summary>
             <form id="report-form" autocomplete="off">
-              <label>ID laporan<input id="report_id" name="report_id" required maxlength="80"></label>
-              <div class="form-group-heading"><span>●</span> REKENING KORBAN</div>
-              <label>Penyelenggara layanan<input name="nama_penyelenggara_korban" required maxlength="120"></label>
-              <label>Nomor rekening / akun<input name="nomor_rekening_korban" required inputmode="numeric" maxlength="80"></label>
-              <label>Nama pemilik<input name="nama_pemilik_rekening_korban" required maxlength="160"></label>
-              <div class="form-group-heading suspect"><span>●</span> REKENING TERLAPOR</div>
-              <label>Penyelenggara layanan<input name="nama_penyelenggara_terlapor" required maxlength="120"></label>
-              <label>Nomor rekening / akun<input name="nomor_rekening_terlapor" required inputmode="numeric" maxlength="80"></label>
-              <label>Nama pemilik<input name="nama_pemilik_rekening_terlapor" required maxlength="160"></label>
-              <label>Waktu transaksi (WIB)<input name="waktu_transaksi" type="datetime-local" required></label>
-              <label>Nominal transaksi (Rp)<input name="nominal_transaksi" type="number" min="1" step="1" required></label>
-              <button id="trace-button" class="button primary trace-button" type="submit"><span>⌕</span> Lacak aliran dana <span>→</span></button>
-              <p id="form-note" class="form-note">Data sintetis. Pencocokan skenario memerlukan rekening dan nominal yang sesuai.</p>
+              <label>ID tiket IASC<input id="iasc_ticket_id" name="iasc_ticket_id" required maxlength="80"></label>
+              <label>ID trail FNA<input name="fna_trail_id" required maxlength="80"></label>
+              <div class="form-group-heading"><span>●</span> KORBAN · KONTEKS HANDOFF</div>
+              <label>PUJK korban<input name="victim_pujk_name" required maxlength="120"></label>
+              <label>Nomor rekening korban<input name="victim_account_number" required maxlength="64"></label>
+              <label>Nama pemilik rekening korban<input name="victim_account_name" required maxlength="120"></label>
+              <div class="form-group-heading"><span>●</span> TITIK TERAKHIR FNA</div>
+              <label>PUJK pengirim terakhir<input name="last_fna_pujk_name" required maxlength="120"></label>
+              <label>Rekening terakhir FNA<input name="last_fna_account_number" required maxlength="64"></label>
+              <div class="form-group-heading suspect"><span>●</span> GATEWAY PAKD / P2P</div>
+              <label>VA / rekening tujuan PAKD atau P2P<input name="pakd_gateway_va_or_account" required maxlength="64"></label>
+              <label>Nomor referensi RRN<input name="rrn_reference_number" required maxlength="80"></label>
+              <label>Waktu transfer fiat (WIB)<input name="fiat_transfer_timestamp" type="datetime-local" step="1" required></label>
+              <label>Nominal transfer fiat (Rp)<input name="fiat_transfer_amount_idr" type="number" min="0.01" step="0.01" required></label>
+              <button id="trace-button" class="button primary trace-button" type="submit"><span>⌕</span> Lanjutkan PAKD Trails <span>→</span></button>
+              <p id="form-note" class="form-note">Snapshot FNA sintetis. Pencocokan PAKD memakai RRN, gateway, nominal, dan waktu transfer.</p>
             </form>
           </details>
         </div>
-        <div class="panel-foot"><span class="status-dot"></span><span>Mode lokal · tanpa kredensial bank</span></div>
+        <div class="panel-foot"><span class="status-dot"></span><span>Snapshot demo · bukan koneksi FNA live</span></div>
       </aside>
 
       <section class="graph-panel panel" aria-labelledby="graph-title">
-        <div class="graph-header"><div><div class="section-caption">LIVE INVESTIGATION MAP</div><h2 id="graph-title">Jejak lintas jalur</h2></div><div class="graph-header-actions"><button id="export-button" class="icon-button" title="Unduh bukti investigasi JSON" aria-label="Unduh bukti investigasi JSON">↓</button><button id="fit-button" class="icon-button" title="Pas-kan seluruh grafik" aria-label="Pas-kan seluruh grafik">⛶</button></div></div>
+        <div class="graph-header"><div><div class="section-caption">DOWNSTREAM INVESTIGATION MAP</div><h2 id="graph-title">PAKD Trails & On-Chain Tracker</h2></div><div class="graph-header-actions"><button id="export-button" class="icon-button" title="Unduh bukti investigasi JSON" aria-label="Unduh bukti investigasi JSON">↓</button><button id="fit-button" class="icon-button" title="Pas-kan seluruh grafik" aria-label="Pas-kan seluruh grafik">⛶</button></div></div>
         <div id="route-badges" class="route-badges" aria-label="Deteksi jalur"></div>
-        <div class="rail-guide"><span><i class="blue"></i>FIAT BANK</span><b>→</b><span><i class="amber"></i>PAKD / P2P BRIDGE</span><b>→</b><span><i class="purple"></i>ON-CHAIN</span></div>
+        <div class="rail-guide" aria-label="Tiga zona arsitektur">
+          <span><i class="blue"></i><b>ZONA 1 · FNA’s Money Trails</b><small>PUJK · snapshot handoff</small></span>
+          <span class="innovation-zone"><i class="amber"></i><b>ZONA 2 · PAKD Trails</b><small>INOVASI · ledger exchange & P2P</small></span>
+          <span><i class="purple"></i><b>ZONA 3 · Arkham Trails</b><small>Address blockchain publik</small></span>
+        </div>
         <div id="graph-board" class="graph-board">
           <div id="graph-scroll" class="graph-scroll">
           <svg id="graph" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 650" role="group" aria-label="Grafik interaktif aliran dana. Pilih simpul untuk memeriksa bukti."><defs><marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#438bf0"/></marker><marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#edb256"/></marker><marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#a48af5"/></marker></defs><g id="viewport"><g id="edges"></g><g id="nodes"></g></g></svg>
           </div>
-          <div id="graph-loading" class="graph-loading"><div class="loading-orbit"></div><strong>Menyusun jejak aliran dana</strong><span>Menghubungkan bank, escrow, dan on-chain…</span></div>
+          <div id="graph-loading" class="graph-loading"><div class="loading-orbit"></div><strong>Menyusun jejak aliran dana</strong><span>Mencocokkan handoff FNA dengan ledger PAKD dan on-chain…</span></div>
           <div class="graph-watermark">IASC <span>INTELLIGENCE LAB</span></div>
           <div class="zoom-controls"><button id="zoom-out" aria-label="Perkecil grafik">−</button><span id="zoom-level">100%</span><button id="zoom-in" aria-label="Perbesar grafik">+</button></div>
           <div id="animation-step" class="animation-step" hidden></div>
         </div>
-        <div class="graph-footer"><div class="legend"><span><i class="blue"></i> Bank</span><span><i class="amber"></i> Escrow / VA</span><span><i class="purple"></i> Wallet</span><span><i class="green"></i> Intersepsi</span></div><button id="animate-button" class="button subtle"><span>▷</span> Animasi step-by-step</button></div>
+        <div class="graph-footer"><div class="legend"><span><i class="blue"></i> FNA / PUJK</span><span><i class="amber"></i> PAKD Trails</span><span><i class="purple"></i> Arkham</span><span><i class="green"></i> Disetujui institusi</span></div><button id="animate-button" class="button subtle"><span>▷</span> Animasi step-by-step</button></div>
         <div id="warnings" class="warnings" hidden></div>
       </section>
 
       <aside class="right-panel panel">
-        <div class="panel-title"><span class="section-number">02</span><h2>Intelijen & tindakan</h2><span class="inspector-dot"></span></div>
+        <div class="panel-title"><span class="section-number">02</span><h2>Governance & keputusan</h2><span class="inspector-dot"></span></div>
         <div class="inspector-scroll">
           <section id="inspector" class="inspector"><div class="inspector-empty"><span>⌖</span><h3>Inspeksi simpul</h3><p>Pilih rekening, escrow, atau wallet pada grafik untuk melihat bukti.</p></div></section>
+          <section class="action-section governance-section"><div class="section-caption">FREEZE REQUEST & DECISION <span class="tiny-tag">SIMULASI</span></div><div id="action-list"></div><p class="action-disclaimer">IASC mengirim rekomendasi dan bukti. Keputusan freeze dilakukan masing-masing PUJK/PAKD. Seluruh dispatch dan callback di lab bersifat simulasi.</p></section>
+          <section class="pakd-section"><div class="section-caption">PAKD TRAILS · LEDGER INTERNAL <span id="pakd-count">0</span></div><div id="pakd-list"></div></section>
           <section class="evidence-section"><div class="section-caption">BUKTI P2P ESCROW <span id="evidence-count">0</span></div><div id="evidence-list"><p class="muted small">Bukti akan tampil setelah penelusuran.</p></div></section>
-          <section class="action-section"><div class="section-caption">RECOVERY CONSOLE <span class="tiny-tag">SIMULASI</span></div><div id="action-list"></div><p class="action-disclaimer">Eksekusi di lab tidak mengirim instruksi ke bank, PAKD, atau blockchain. Paket penerbit token berstatus DRAFT.</p></section>
           <section class="activity-section"><div class="section-caption">LOG INVESTIGASI</div><ol id="activity-log" class="activity-log"></ol></section>
         </div>
       </aside>
     </div>
-    <footer class="page-footer"><span>INDONESIA ANTI-SCAM CENTRE · CONCEPT DEMONSTRATOR</span><span>Data sintetis · Bukan sistem resmi OJK / Arkham · Tidak ada dana nyata dipindahkan</span></footer>
+    <footer class="page-footer"><span>INDONESIA ANTI-SCAM CENTRE · CONCEPT DEMONSTRATOR</span><span>Data sintetis · Konsep arsitektur FNA + PAKD · Bukan sistem resmi OJK / FNA / Arkham</span></footer>
   </main>
   <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
 </body>

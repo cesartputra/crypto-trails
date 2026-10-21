@@ -1,30 +1,66 @@
-"""Validated public API contracts. All fixture identities are synthetic."""
+"""Validated FNA handoff, PAKD trail and institution-owned decision contracts."""
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 Money = Decimal
+DecisionStatus = Literal["NOT_SENT", "SENT_WAITING_DECISION", "APPROVED_FREEZE_BY_INSTITUTION", "PARTIAL_FREEZE_BY_INSTITUTION", "REJECTED_BY_INSTITUTION"]
+FinalDecisionStatus = Literal["APPROVED_FREEZE_BY_INSTITUTION", "PARTIAL_FREEZE_BY_INSTITUTION", "REJECTED_BY_INSTITUTION"]
 
-class IASCTransactionReportInput(BaseModel):
+class FNAMoneyTrailHandoffInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
-    report_id: str = Field(min_length=1, max_length=80, pattern=r"^[\w.\-/]+$")
-    nama_penyelenggara_korban: str = Field(min_length=1, max_length=120)
-    nomor_rekening_korban: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9\-]+$")
-    nama_pemilik_rekening_korban: str = Field(min_length=1, max_length=120)
-    nama_penyelenggara_terlapor: str = Field(min_length=1, max_length=120)
-    nomor_rekening_terlapor: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9\-]+$")
-    nama_pemilik_rekening_terlapor: str = Field(min_length=1, max_length=120)
-    waktu_transaksi: datetime
-    nominal_transaksi: Money = Field(gt=0, le=Decimal("1000000000000"), max_digits=15, decimal_places=2)
+    iasc_ticket_id: str = Field(min_length=1, max_length=80, pattern=r"^[\w.\-/]+$")
+    fna_trail_id: str = Field(min_length=1, max_length=80, pattern=r"^[\w.\-/]+$")
+    victim_pujk_name: str = Field(min_length=1, max_length=120)
+    victim_account_number: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9\-]+$")
+    victim_account_name: str = Field(min_length=1, max_length=120)
+    last_fna_pujk_name: str = Field(min_length=1, max_length=120)
+    last_fna_account_number: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9\-]+$")
+    pakd_gateway_va_or_account: str = Field(min_length=3, max_length=64, pattern=r"^[A-Za-z0-9\-]+$")
+    fiat_transfer_amount_idr: Money = Field(gt=0, le=Decimal("1000000000000"), max_digits=15, decimal_places=2)
+    fiat_transfer_timestamp: datetime
+    rrn_reference_number: str = Field(min_length=6, max_length=80, pattern=r"^[A-Za-z0-9\-]+$")
     scenario_id: str | None = Field(default=None, max_length=40)
 
-    @field_validator("waktu_transaksi")
+    @field_validator("fiat_transfer_timestamp")
     @classmethod
-    def timezone_required(cls, value: datetime) -> datetime:
+    def timezone_required(cls, value):
         if value.tzinfo is None or value.utcoffset() is None:
-            raise ValueError("Waktu transaksi wajib menyertakan zona waktu, contoh +07:00")
+            raise ValueError("Waktu transfer handoff wajib menyertakan zona waktu, contoh +07:00")
         return value
+
+class PAKDInternalTrailRecord(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+    record_id: str
+    target_node_id: str
+    pakd_name: str
+    intake_mechanism: Literal["DIRECT_VA_DEPOSIT", "P2P_ON_RAMP_ESCROW", "P2P_OFF_RAMP_SETTLEMENT", "ONCHAIN_DEPOSIT"]
+    pakd_user_uid: str
+    kyc_nik_masked: str = Field(pattern=r"^[0-9]{4}\*{8}[0-9]{4}$")
+    fiat_in_idr: Money = Field(ge=0)
+    crypto_purchased_token: Literal["USDT", "USDC", "BTC", "ETH"]
+    crypto_purchased_amount: Decimal = Field(ge=0)
+    remaining_pakd_balance_idr: Money = Field(ge=0)
+    withdrawal_status: Literal["STILL_IN_PAKD_WALLET", "WITHDRAWN_ONCHAIN", "SOLD_VIA_P2P_OFFRAMP"]
+    withdrawal_tx_hash: str | None = None
+    blockchain_network: str | None = None
+    initial_wallet_address: str | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+class InstitutionFreezeDecision(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+    request_id: str
+    target_node_id: str
+    institution_category: Literal["PUJK", "PAKD", "STABLECOIN_ISSUER_OR_GLOBAL_EXCHANGE"]
+    institution_name: str
+    request_status: DecisionStatus = "NOT_SENT"
+    requested_amount_idr: Money = Field(ge=0)
+    approved_frozen_amount_idr: Money = Field(default=Decimal(0), ge=0)
+    institution_decision_notes: str = "Belum ada keputusan institusi."
+    decided_by_unit: str = ""
+    decision_timestamp: datetime | None = None
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 class TrailNode(BaseModel):
     id: str
@@ -38,10 +74,11 @@ class TrailNode(BaseModel):
     chain: str | None = None
     address: str | None = None
     account: str | None = None
-    taint_score_pct: Decimal | None = Field(default=Decimal(100), ge=0, le=100)
+    taint_score_pct: Decimal | None = Field(default=None, ge=0, le=100)
     balance_crypto: Decimal = Field(default=Decimal(0), ge=0)
     status: str = "TRACED"
     hop: int = Field(default=0, ge=0)
+    institution_decision: InstitutionFreezeDecision | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 class TrailEdge(BaseModel):
@@ -71,37 +108,35 @@ class P2PEscrowMatchDetail(BaseModel):
     linked_final_bank_account: str | None = None
     evidence: dict[str, Any] = Field(default_factory=dict)
 
-class RecoveryAction(BaseModel):
-    id: str
-    action_type: Literal["FREEZE_BANK", "FREEZE_PAKD", "TARGETED_ESCROW_HOLD", "ISSUER_BLACKLIST_REQUEST"]
-    node_id: str
-    label: str
-    amount_idr: Money = Field(ge=0)
-    asset: str | None = None
-    crypto_amount: Decimal = Decimal(0)
-    status: str = "READY"
-    reason: str
-    metadata: dict[str, Any] = Field(default_factory=dict)
-
 class CrossRailGraphResponse(BaseModel):
     trace_id: str
-    report_id: str
+    iasc_ticket_id: str
+    fna_trail_id: str
     scenario_id: str | None
     simulation: bool = True
+    fna_handoff: FNAMoneyTrailHandoffInput
     nodes: list[TrailNode]
     edges: list[TrailEdge]
+    pakd_trails: list[PAKDInternalTrailRecord] = Field(default_factory=list)
     p2p_detections: list[P2PEscrowMatchDetail] = Field(default_factory=list)
     total_scam_idr: Money
     total_traced_idr: Money
     recoverable_amount_idr: Money
+    confirmed_frozen_amount_idr: Money = Decimal(0)
     recovery_probability_pct: Decimal
     total_traced_usdt: Decimal = Decimal(0)
     hop_count: int = 0
     route_badges: list[str] = Field(default_factory=list)
-    recovery_actions: list[RecoveryAction] = Field(default_factory=list)
+    governance_requests: list[InstitutionFreezeDecision] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
 
-class FreezeRequest(BaseModel):
+class SendFreezeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     trace_id: str = Field(min_length=1, max_length=80)
-    action_id: str = Field(min_length=1, max_length=80)
+    request_id: str = Field(min_length=1, max_length=100)
+
+class SimulateInstitutionDecisionInput(SendFreezeRequest):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, allow_inf_nan=False)
+    decision: FinalDecisionStatus
+    approved_frozen_amount_idr: Money | None = Field(default=None, ge=0, max_digits=15, decimal_places=2)
+    institution_decision_notes: str | None = Field(default=None, min_length=1, max_length=1000)

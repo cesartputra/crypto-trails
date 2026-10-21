@@ -10,16 +10,16 @@ from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from schemas import CrossRailGraphResponse, FreezeRequest, IASCTransactionReportInput, TrailNode, TrailEdge
+from schemas import CrossRailGraphResponse, FNAMoneyTrailHandoffInput, SendFreezeRequest, SimulateInstitutionDecisionInput, TrailNode, TrailEdge
 from scenarios import SCENARIOS, get_scenario, scenario_catalog
 from services.arkham_client import ArkhamClient, ArkhamAPIError, CHAIN_NAMES
-from services.bank_trailer import BankTrailer
+from services.bank_trailer import FNAHandoffAdapter
 from services.p2p_and_pakd_bridge import P2PAndPAKDBridge
-from services.recovery_action import plan_recovery, execute_simulated_action
+from services.recovery_action import plan_governance_requests, build_evidence_packet, send_request, decide_request, GovernanceConflict
 
 D = Decimal
 ROOT = Path(__file__).resolve().parent
-app = FastAPI(docs_url=None, redoc_url=None, title="IASC Cross-Rail Money Trailing · PoC", version="1.0.0",
+app = FastAPI(docs_url=None, redoc_url=None, title="IASC Cross-Rail Money Trailing · PoC", version="2.0.0",
               description="Data sintetis dan aksi pemulihan simulasi. Bukan sistem operasional atau layanan resmi OJK.")
 # shortcut: state lokal maksimum 128 trace selama 1 jam; gunakan penyimpanan terenkripsi/audit durable sebelum multi-worker/produksi.
 TRACES: OrderedDict = OrderedDict()
@@ -33,7 +33,7 @@ def store_trace(graph):
         TRACES.pop(key, None)
     while len(TRACES) >= MAX_TRACES:
         TRACES.popitem(last=False)
-    TRACES[graph.trace_id] = {"graph": graph, "created": now, "executions": {}, "expansions": {}}
+    TRACES[graph.trace_id] = {"graph": graph, "created": now, "packets": {}, "expansions": {}}
 
 
 def require_trace(trace_id):
@@ -63,7 +63,7 @@ async def health():
         mode = "SIMULATION" if client.simulation else "LIVE_READ_ONLY_AVAILABLE"
     except ValueError:
         mode = "INVALID_ARKHAM_CONFIGURATION"
-    return {"status": "ok", "simulation": True, "arkham_mode": mode, "recovery_mode": "SIMULATION_ONLY"}
+    return {"status": "ok", "simulation": True, "arkham_mode": mode, "governance_mode": "SIMULATED_DISPATCH_AND_INSTITUTION_DECISIONS", "fna_mode": "IMPORTED_HANDOFF_ONLY"}
 
 
 @app.get("/api/v1/trail/scenarios")
@@ -72,59 +72,57 @@ async def scenarios():
 
 
 @app.post("/api/v1/trail/trace-report", response_model=CrossRailGraphResponse)
-async def trace_report(report: IASCTransactionReportInput):
+async def trace_report(handoff: FNAMoneyTrailHandoffInput):
     trace_id = str(uuid4())
-    if not report.scenario_id:
-        graph = CrossRailGraphResponse(trace_id=trace_id, report_id=report.report_id, scenario_id=None,
-            nodes=[TrailNode(id="victim", label=f"Korban · {report.nama_penyelenggara_korban}", node_zone="FIAT_BANK", node_type="VICTIM",
-                             account=report.nomor_rekening_korban, amount_idr=report.nominal_transaksi, taint_score_pct=D(0),
-                             metadata={"owner": report.nama_pemilik_rekening_korban, "source": "REPORT_INPUT_NOT_VERIFIED"}),
-                   TrailNode(id="reported", label=f"Terlapor · {report.nama_penyelenggara_terlapor}", node_zone="FIAT_BANK", node_type="REPORTED_ACCOUNT",
-                             account=report.nomor_rekening_terlapor, amount_idr=report.nominal_transaksi, hop=1, taint_score_pct=D(0),
-                             metadata={"owner": report.nama_pemilik_rekening_terlapor, "source": "REPORT_INPUT_NOT_VERIFIED"})],
-            edges=[TrailEdge(id="reported-transfer", source="victim", target="reported", edge_type="BANK_TRANSFER", label="Transfer dilaporkan · belum diverifikasi",
-                             amount_idr=report.nominal_transaksi, timestamp=report.waktu_transaksi, metadata={"source": "REPORT_INPUT_NOT_VERIFIED"})],
-            total_scam_idr=report.nominal_transaksi, total_traced_idr=D(0), recoverable_amount_idr=D(0), recovery_probability_pct=D(0),
-            hop_count=1, warnings=["DATA GAP: input laporan belum diverifikasi. Tidak ada mutasi bank, data escrow, KYC atau bukti on-chain mitra untuk laporan ini. Pilih skenario demo untuk data sintetis."])
+    if not handoff.scenario_id:
+        nodes, edges = FNAHandoffAdapter().manual_snapshot(handoff)
+        graph = CrossRailGraphResponse(trace_id=trace_id, iasc_ticket_id=handoff.iasc_ticket_id, fna_trail_id=handoff.fna_trail_id,
+            scenario_id=None, fna_handoff=handoff, nodes=nodes, edges=edges,
+            total_scam_idr=handoff.fiat_transfer_amount_idr, total_traced_idr=D(0), recoverable_amount_idr=D(0),
+            recovery_probability_pct=D(0), hop_count=max(n.hop for n in nodes),
+            warnings=["DATA GAP: handoff belum diverifikasi. Tidak ada snapshot FNA atau ledger PAKD mitra untuk memvalidasi RRN, gateway, UID/KYC atau withdrawal. Tidak ada rekomendasi freeze dibuat."])
         store_trace(graph)
         return graph
-    if report.scenario_id not in SCENARIOS:
+    if handoff.scenario_id not in SCENARIOS:
         raise HTTPException(404, "Skenario demo tidak ditemukan")
-    scenario = get_scenario(report.scenario_id)
-    expected = IASCTransactionReportInput.model_validate(scenario["report"])
-    # Every material input must agree with the selected synthetic ledger; report_id may be operator-assigned.
-    mismatches = [key for key in IASCTransactionReportInput.model_fields if key not in {"report_id", "scenario_id"}
-                  and getattr(expected, key) != getattr(report, key)]
+    scenario = get_scenario(handoff.scenario_id)
+    expected = FNAMoneyTrailHandoffInput.model_validate(scenario["handoff"])
+    mismatches = [key for key in FNAMoneyTrailHandoffInput.model_fields if key not in {"iasc_ticket_id", "scenario_id"}
+                  and getattr(expected, key) != getattr(handoff, key)]
     if mismatches:
-        raise HTTPException(422, {"message": "Input tidak cocok dengan ledger skenario. Muat ulang skenario atau hapus scenario_id untuk laporan tanpa data mitra.", "fields": mismatches})
+        raise HTTPException(422, {"message": "Handoff tidak cocok dengan snapshot FNA/ledger PAKD skenario. Muat ulang preset atau kosongkan scenario_id untuk handoff manual.", "fields": mismatches})
     try:
-        nodes, edges, candidates = BankTrailer().trace(report, scenario)
+        nodes, edges = FNAHandoffAdapter().import_snapshot(handoff, scenario)
         bridge = P2PAndPAKDBridge()
-        p2p = bridge.resolve_onramp(scenario, nodes, edges, candidates)
-        # Demo fixtures stay deterministic even when a live Arkham key is configured.
+        p2p, pakd = bridge.resolve_onramp(handoff, scenario, nodes, edges)
+        # Fixture FNA/PAKD/Arkham stays reproducible; a configured key only enables opt-in live expansion.
         ArkhamClient(api_key="").trace_fixture(scenario, nodes, edges)
-        p2p.extend(bridge.resolve_offramp(scenario, nodes, edges))
-        actions = plan_recovery(scenario, nodes)
+        offramp, deposits = bridge.resolve_offramp(scenario, nodes, edges)
+        p2p.extend(offramp)
+        pakd.extend(deposits)
+        requests = plan_governance_requests(scenario, nodes)
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    recoverable = min(report.nominal_transaksi, sum((D(a.metadata.get("recoverable_contribution_idr", "0")) for a in actions), D(0)))
-    warnings = ["DEMO: seluruh identitas, KYC, mutasi, label intelijen, saldo dan tx_hash sintetis. Tidak terhubung ke IASC/bank/PAKD.",
-                "Probabilitas pemulihan adalah asumsi skenario untuk demo, bukan prediksi terkalibrasi atau jaminan dana kembali.",
-                "Taint memakai proportional flow pada ledger sintetis lengkap; bukan penetapan pidana atau bukti tunggal kepemilikan.",
-                "Semua freeze/hold adalah simulasi. Paket blacklist adalah draf permohonan issuer yang belum dikirim."]
+    recoverable = min(handoff.fiat_transfer_amount_idr, sum((D(r.metadata["available_amount_idr"]) for r in requests), D(0)))
+    warnings = ["DEMO: snapshot FNA, ledger PAKD, identitas/KYC tersamarkan, label Arkham, saldo dan tx_hash adalah sintetis; tidak ada konektor operasional FNA/IASC/bank/PAKD.",
+        "Modul ini menerima handoff downstream FNA dan menambahkan PAKD Trails serta Arkham On-Chain Trails; tidak menggantikan pelacakan PUJK oleh FNA.",
+        "IASC hanya merekomendasikan penundaan. Keputusan dan pelaksanaan freeze berada pada masing-masing PUJK/PAKD atau issuer terkait.",
+        "Nilai potensial berbeda dari nominal disetujui institusi. Pengiriman tiket tidak membekukan dana; seluruh callback keputusan di sini simulasi.",
+        "Probabilitas recovery dan taint memakai asumsi fixture, bukan kepastian pidana, prediksi terkalibrasi atau jaminan pengembalian dana."]
     if scenario.get("fees_idr"):
-        warnings.append(f"Biaya simulasi Rp{scenario['fees_idr']}; konversi tetap Rp16.000/USDT bukan harga pasar. Total terlacak termasuk biaya yang diketahui.")
+        warnings.append(f"Biaya konversi fixture Rp{scenario['fees_idr']}; kurs tetap Rp16.000/USDT bukan harga pasar.")
     if scenario.get("expansion_note"):
-        warnings.append("Atribusi berhenti pada DEX router: hasil swap tidak boleh diasumsikan milik pelaku tanpa log dan bukti tambahan.")
-    badges = ["DIRECT VA"] if scenario["onramp"]["kind"] == "VA" else ["P2P ON-RAMP DETECTED"]
+        warnings.append("Atribusi berhenti pada DEX; output swap tidak diasumsikan milik pelaku tanpa bukti tambahan.")
+    badges = ["FNA HANDOFF", "PAKD TRAILS", "DIRECT VA" if scenario["onramp"]["kind"] == "VA" else "P2P ON-RAMP DETECTED"]
     if any(p.p2p_direction == "OFF_RAMP_WITHDRAWAL" for p in p2p):
         badges.append("P2P OFF-RAMP CASH-OUT DETECTED")
-    edges.sort(key=lambda edge: edge.timestamp or report.waktu_transaksi)
-    graph = CrossRailGraphResponse(trace_id=trace_id, report_id=report.report_id, scenario_id=report.scenario_id, nodes=nodes, edges=edges,
-        p2p_detections=p2p, total_scam_idr=report.nominal_transaksi, total_traced_idr=report.nominal_transaksi,
+    edges.sort(key=lambda edge: edge.timestamp or handoff.fiat_transfer_timestamp)
+    graph = CrossRailGraphResponse(trace_id=trace_id, iasc_ticket_id=handoff.iasc_ticket_id, fna_trail_id=handoff.fna_trail_id,
+        scenario_id=handoff.scenario_id, fna_handoff=handoff, nodes=nodes, edges=edges, pakd_trails=pakd,
+        p2p_detections=p2p, total_scam_idr=handoff.fiat_transfer_amount_idr, total_traced_idr=handoff.fiat_transfer_amount_idr,
         recoverable_amount_idr=recoverable, recovery_probability_pct=D(scenario["probability"]),
         total_traced_usdt=D(scenario["onramp"]["crypto_amount"]) + D(scenario["onramp"].get("held_escrow_idr", "0")) / D(16000),
-        hop_count=max((n.hop for n in nodes), default=0), route_badges=badges, recovery_actions=actions, warnings=warnings)
+        hop_count=max((n.hop for n in nodes), default=0), route_badges=badges, governance_requests=requests, warnings=warnings)
     store_trace(graph)
     return graph
 
@@ -231,21 +229,49 @@ async def expand_address(address: str, trace_id: str = Query(min_length=1, max_l
     return result
 
 
-@app.post("/api/v1/recovery/execute-freeze")
-async def execute_freeze(request: FreezeRequest):
-    state = require_trace(request.trace_id)
-    if request.action_id in state["executions"]:
-        return state["executions"][request.action_id]
+def require_governance_request(state, request_id):
+    request = next((r for r in state["graph"].governance_requests if r.request_id == request_id), None)
+    if request is None:
+        raise HTTPException(404, "Request tidak ditemukan dalam trace ini")
+    return request
+
+
+@app.post("/api/v1/governance/send-freeze-request")
+async def dispatch_freeze_request(payload: SendFreezeRequest):
+    state = require_trace(payload.trace_id)
     graph = state["graph"]
-    action = next((a for a in graph.recovery_actions if a.id == request.action_id), None)
-    if not action:
-        raise HTTPException(404, "Aksi tidak ditemukan dalam trace ini")
+    request = require_governance_request(state, payload.request_id)
     try:
-        result = execute_simulated_action(graph, action)
+        if request.request_id not in state["packets"]:
+            packet = build_evidence_packet(graph, request)
+            send_request(graph, request)
+            state["packets"][request.request_id] = packet
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
-    state["executions"][request.action_id] = result
-    return result
+    return {"request": request, "simulation": True,
+        "message": "Tiket rekomendasi tercatat pada outbox simulasi. Institusi penerima memutuskan; belum ada dana diamankan oleh pengiriman tiket.",
+        "evidence_packet": state["packets"][request.request_id], "confirmed_frozen_amount_idr": str(graph.confirmed_frozen_amount_idr)}
+
+
+@app.post("/api/v1/governance/simulate-institution-decision")
+async def simulate_institution_decision(payload: SimulateInstitutionDecisionInput):
+    state = require_trace(payload.trace_id)
+    graph = state["graph"]
+    request = require_governance_request(state, payload.request_id)
+    try:
+        decide_request(graph, request, payload)
+    except GovernanceConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+    return {"request": request, "simulation": True,
+        "message": f"Callback keputusan simulasi dicatat dari {request.decided_by_unit}; IASC tidak mengeksekusi freeze sepihak.",
+        "confirmed_frozen_amount_idr": str(graph.confirmed_frozen_amount_idr)}
+
+
+@app.post("/api/v1/recovery/execute-freeze", deprecated=True)
+async def retired_direct_freeze():
+    raise HTTPException(410, "Direct auto-freeze dihapus. Gunakan /api/v1/governance/send-freeze-request lalu /api/v1/governance/simulate-institution-decision; keputusan berada pada institusi penerima.")
 
 
 @app.get("/")
