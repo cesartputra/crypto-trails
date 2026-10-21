@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="id">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#080d17">
+  <title>IASC · Cross-Rail Intelligence</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%230c1727'/%3E%3Cpath d='M20 6 32 11v10c0 8-12 14-12 14S8 29 8 21V11Z' fill='none' stroke='%2357d8ef' stroke-width='2'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <header class="command-bar">
+    <a class="brand" href="/" aria-label="IASC Cross-Rail Intelligence"><span class="brand-mark" aria-hidden="true">⌘</span><span><b>IASC <span class="brand-divider">/</span> <span class="brand-light">CROSS-RAIL</span></b><small>FINANCIAL CRIME INTELLIGENCE</small></span></a>
+    <div class="command-context"><span class="live-dot"></span> COMMAND CENTER <span class="context-divider">/</span> INVESTIGASI DANA</div>
+    <div class="command-right"><span class="simulation-tag">LAB · SIMULASI</span><span class="analyst-avatar" title="Demo analis">IA</span></div>
+  </header>
+
+  <main>
+    <section class="page-heading"><div><div class="eyebrow">FIAT → CRYPTO → FIAT</div><h1>Ikuti dananya. Temukan titik intersepsi.</h1><p>Intelijen lintas rekening, escrow P2P, dan jaringan blockchain dalam satu investigasi.</p></div><div class="case-indicator"><span class="live-dot"></span><span id="case-id">MEMUAT KASUS</span></div></section>
+
+    <section class="metrics" aria-label="Ringkasan investigasi" aria-live="polite">
+      <article class="metric"><span class="metric-label">TOTAL KERUGIAN <span class="metric-symbol">↗</span></span><strong id="metric-loss">—</strong><small>Nilai laporan korban</small></article>
+      <article class="metric"><span class="metric-label">DANA TERLACAK <span class="metric-symbol">⌁</span></span><strong id="metric-traced">—</strong><small id="metric-crypto">— USDT · lintas jalur</small></article>
+      <article class="metric"><span class="metric-label">KEDALAMAN JEJAK <span class="metric-symbol">⋮</span></span><strong id="metric-hops">— <em>hop</em></strong><small>Bank · P2P · On-chain</small></article>
+      <article class="metric recovery-metric"><span class="metric-label">POTENSI DISELAMATKAN <span class="metric-symbol">◈</span></span><strong id="metric-recovery">—</strong><small id="metric-recovery-note">Estimasi skenario sintetis</small></article>
+    </section>
+
+    <div class="workspace">
+      <aside class="left-panel panel">
+        <div class="panel-title"><span class="section-number">01</span><h2>Mulai investigasi</h2></div>
+        <div class="panel-body">
+          <div class="section-caption">SKENARIO DEMONSTRASI <span>4 KASUS</span></div>
+          <div id="scenarios" class="scenario-list" aria-label="Pilih skenario"><div class="skeleton">Mengambil skenario…</div></div>
+          <button id="manual-button" class="manual-button" type="button">+ Input laporan manual</button>
+          <details class="report-details" open>
+            <summary><span>Informasi transaksi</span><small>TAHAP 4 IASC</small><span class="chevron">⌄</span></summary>
+            <form id="report-form" autocomplete="off">
+              <label>ID laporan<input id="report_id" name="report_id" required maxlength="80"></label>
+              <div class="form-group-heading"><span>●</span> REKENING KORBAN</div>
+              <label>Penyelenggara layanan<input name="nama_penyelenggara_korban" required maxlength="120"></label>
+              <label>Nomor rekening / akun<input name="nomor_rekening_korban" required inputmode="numeric" maxlength="80"></label>
+              <label>Nama pemilik<input name="nama_pemilik_rekening_korban" required maxlength="160"></label>
+              <div class="form-group-heading suspect"><span>●</span> REKENING TERLAPOR</div>
+              <label>Penyelenggara layanan<input name="nama_penyelenggara_terlapor" required maxlength="120"></label>
+              <label>Nomor rekening / akun<input name="nomor_rekening_terlapor" required inputmode="numeric" maxlength="80"></label>
+              <label>Nama pemilik<input name="nama_pemilik_rekening_terlapor" required maxlength="160"></label>
+              <label>Waktu transaksi (WIB)<input name="waktu_transaksi" type="datetime-local" required></label>
+              <label>Nominal transaksi (Rp)<input name="nominal_transaksi" type="number" min="1" step="1" required></label>
+              <button id="trace-button" class="button primary trace-button" type="submit"><span>⌕</span> Lacak aliran dana <span>→</span></button>
+              <p id="form-note" class="form-note">Data sintetis. Pencocokan skenario memerlukan rekening dan nominal yang sesuai.</p>
+            </form>
+          </details>
+        </div>
+        <div class="panel-foot"><span class="status-dot"></span><span>Mode lokal · tanpa kredensial bank</span></div>
+      </aside>
+
+      <section class="graph-panel panel" aria-labelledby="graph-title">
+        <div class="graph-header"><div><div class="section-caption">LIVE INVESTIGATION MAP</div><h2 id="graph-title">Jejak lintas jalur</h2></div><div class="graph-header-actions"><button id="export-button" class="icon-button" title="Unduh bukti investigasi JSON" aria-label="Unduh bukti investigasi JSON">↓</button><button id="fit-button" class="icon-button" title="Pas-kan seluruh grafik" aria-label="Pas-kan seluruh grafik">⛶</button></div></div>
+        <div id="route-badges" class="route-badges" aria-label="Deteksi jalur"></div>
+        <div class="rail-guide"><span><i class="blue"></i>FIAT BANK</span><b>→</b><span><i class="amber"></i>PAKD / P2P BRIDGE</span><b>→</b><span><i class="purple"></i>ON-CHAIN</span></div>
+        <div id="graph-board" class="graph-board">
+          <div id="graph-scroll" class="graph-scroll">
+          <svg id="graph" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 650" role="group" aria-label="Grafik interaktif aliran dana. Pilih simpul untuk memeriksa bukti."><defs><marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#438bf0"/></marker><marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#edb256"/></marker><marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#a48af5"/></marker></defs><g id="viewport"><g id="edges"></g><g id="nodes"></g></g></svg>
+          </div>
+          <div id="graph-loading" class="graph-loading"><div class="loading-orbit"></div><strong>Menyusun jejak aliran dana</strong><span>Menghubungkan bank, escrow, dan on-chain…</span></div>
+          <div class="graph-watermark">IASC <span>INTELLIGENCE LAB</span></div>
+          <div class="zoom-controls"><button id="zoom-out" aria-label="Perkecil grafik">−</button><span id="zoom-level">100%</span><button id="zoom-in" aria-label="Perbesar grafik">+</button></div>
+          <div id="animation-step" class="animation-step" hidden></div>
+        </div>
+        <div class="graph-footer"><div class="legend"><span><i class="blue"></i> Bank</span><span><i class="amber"></i> Escrow / VA</span><span><i class="purple"></i> Wallet</span><span><i class="green"></i> Intersepsi</span></div><button id="animate-button" class="button subtle"><span>▷</span> Animasi step-by-step</button></div>
+        <div id="warnings" class="warnings" hidden></div>
+      </section>
+
+      <aside class="right-panel panel">
+        <div class="panel-title"><span class="section-number">02</span><h2>Intelijen & tindakan</h2><span class="inspector-dot"></span></div>
+        <div class="inspector-scroll">
+          <section id="inspector" class="inspector"><div class="inspector-empty"><span>⌖</span><h3>Inspeksi simpul</h3><p>Pilih rekening, escrow, atau wallet pada grafik untuk melihat bukti.</p></div></section>
+          <section class="evidence-section"><div class="section-caption">BUKTI P2P ESCROW <span id="evidence-count">0</span></div><div id="evidence-list"><p class="muted small">Bukti akan tampil setelah penelusuran.</p></div></section>
+          <section class="action-section"><div class="section-caption">RECOVERY CONSOLE <span class="tiny-tag">SIMULASI</span></div><div id="action-list"></div><p class="action-disclaimer">Eksekusi di lab tidak mengirim instruksi ke bank, PAKD, atau blockchain. Paket penerbit token berstatus DRAFT.</p></section>
+          <section class="activity-section"><div class="section-caption">LOG INVESTIGASI</div><ol id="activity-log" class="activity-log"></ol></section>
+        </div>
+      </aside>
+    </div>
+    <footer class="page-footer"><span>INDONESIA ANTI-SCAM CENTRE · CONCEPT DEMONSTRATOR</span><span>Data sintetis · Bukan sistem resmi OJK / Arkham · Tidak ada dana nyata dipindahkan</span></footer>
+  </main>
+  <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+</body>
+</html>
