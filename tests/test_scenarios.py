@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 
 SCENARIOS = [
+    ("multichain-dispersal", "180000000"),
     ("p2p-full-cycle", "180000000"),
     ("direct-va-loopback", "120000000"),
     ("p2p-dex-cold-wallet", "250000000"),

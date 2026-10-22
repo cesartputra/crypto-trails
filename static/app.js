@@ -2,13 +2,11 @@
 
 const $ = (selector) => document.querySelector(selector);
 const NS = "http://www.w3.org/2000/svg";
-const state = { scenarios: [], scenarioId: null, graph: null, selected: null, selectedEdge: null, mode: "scenario", positions: new Map(), scale: 1, x: 0, y: 0, animation: 0, request: 0, packets: new Map(), busyRequests: new Set(), selectedRequestId: null, decisionDrafts: new Map(), logs: [], baseWidth: 1160, baseHeight: 650 };
+const state = { scenarios: [], scenarioId: null, graph: null, selected: null, selectedEdge: null, mode: "scenario", positions: new Map(), scale: 1, x: 0, y: 0, animation: 0, request: 0, packets: new Map(), busyRequests: new Set(), selectedRequestId: null, decisionDrafts: new Map(), logs: [], baseWidth: 1160, baseHeight: 650, viewportWidth: 0, chainFilter: "ALL", viewNodes: [], viewEdges: [], branchByNode: new Map(), lanes: [], currentStep: 3 };
 const idr = (value) => new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value || 0));
 const number = (value, digits = 2) => new Intl.NumberFormat("id-ID", { maximumFractionDigits: digits }).format(Number(value || 0));
 const short = (value, size = 20) => String(value || "").length > size ? `${String(value).slice(0, size - 2)}…` : String(value || "");
 const friendly = (value) => String(value || "").replaceAll("_", " ");
-const titles = ["P2P full-cycle", "Direct VA & loopback", "DEX & cold wallet", "Golden period", "Bridge ETH → Arbitrum", "Bridge ETH → BSC"];
-const subtitles = ["Deposit → on-chain → cash-out", "Tokocrypto → wallet → Indodax", "PAKD → Uniswap → issuer review", "Escrow tersisa · keputusan institusi", "Stargate → Indodax API", "Celer → Reku API"];
 let toastTimer;
 
 function el(tag, className, text) {
@@ -72,7 +70,7 @@ function drawScenarios() {
     button.title = scenario.title;
     button.setAttribute("aria-pressed", String(state.scenarioId === scenario.id));
     const copy = el("span", "scenario-copy");
-    copy.append(el("strong", "", titles[index] || scenario.title), el("small", "", subtitles[index] || scenario.description));
+    copy.append(el("strong", "", scenario.title), el("small", "", scenario.description));
     button.append(el("span", "scenario-index", String(index + 1).padStart(2, "0")), copy, el("span", "scenario-arrow", "↗"));
     button.addEventListener("click", () => chooseScenario(scenario));
     return button;
@@ -123,6 +121,12 @@ function beginTrace(live = false) {
   $("#nodes").replaceChildren();
   $("#edges").replaceChildren();
   $("#route-badges").replaceChildren();
+  $("#swimlanes").replaceChildren();
+  $("#chain-dispersal-cards").replaceChildren();
+  $("#chain-filters").replaceChildren();
+  $("#executive-title").textContent = live ? "Mengambil aktivitas blockchain…" : "Menyusun ringkasan perkara…";
+  $("#executive-narrative").textContent = "Menunggu respons sumber data.";
+  state.chainFilter = "ALL"; state.currentStep = live ? 3 : 2; renderStepper();
   $("#warnings").hidden = true;
   $("#case-id").textContent = live ? "MENGAMBIL TRANSAKSI MAINNET…" : "MENGHUBUNGKAN BUKTI…";
   for (const metric of ["loss", "traced", "hops", "recovery", "confirmed"]) $(`#metric-${metric}`).textContent = "—";
@@ -134,6 +138,7 @@ function beginTrace(live = false) {
   state.logs = []; $("#activity-log").replaceChildren();
   renderInspector(); renderEvidence(); renderPakd(); renderActions();
   $("#graph-loading").hidden = false;
+  $("#run-scenario-button").disabled = true;
   $("#trace-button").disabled = true;
   $("#live-trace-button").disabled = true;
   return requestId;
@@ -141,6 +146,8 @@ function beginTrace(live = false) {
 
 function acceptGraph(graph) {
   state.graph = graph;
+  state.currentStep = 3;
+  renderCaseSummary(); renderStepper();
   renderMetrics(); renderGraph(); resetView(); renderEvidence(); renderPakd(); renderActions();
   const firstRequest = (graph.governance_requests || []).find((request) => request.institution_category === "PUJK" && Number(request.requested_amount_idr) > 0) || (graph.governance_requests || []).find((request) => Number(request.requested_amount_idr) > 0) || (graph.governance_requests || [])[0];
   if (firstRequest) selectNode(firstRequest.target_node_id);
@@ -165,6 +172,7 @@ function failTrace(error, live = false) {
 function finishTrace(requestId) {
   if (requestId !== state.request) return;
   $("#graph-loading").hidden = true;
+  $("#run-scenario-button").disabled = false;
   $("#trace-button").disabled = false;
   $("#live-trace-button").disabled = false;
 }
@@ -186,19 +194,22 @@ async function trace() {
 async function traceLive() {
   const form = $("#live-form");
   $("#live-wallet").value = $("#live-wallet").value.trim();
+  validateLiveAddress();
   if (!form.reportValidity()) return;
   const payload = { wallet_address: $("#live-wallet").value, max_hops: Number($("#live-hops").value), token_filter: $("#live-token").value, direction: "OUTBOUND", simulate_fna_and_mirror_origin: $("#live-origin").checked, source_chain: $("#live-chain").value, auto_scan_cross_chain: $("#live-cross-chain").checked };
   const key = $("#live-api-key").value.trim();
-  if (key) payload.etherscan_api_key = key;
+  if (key && !["BTC", "SOLANA"].includes(payload.source_chain)) payload.etherscan_api_key = key;
   $("#live-api-key").value = "";
   const requestId = beginTrace(true);
   $("#live-status").textContent = "Mengambil transaksi mainnet. Penelusuran beberapa hop dapat memerlukan beberapa detik…";
   try {
-    const graph = await api("/api/v1/trail/live-etherscan", { method: "POST", body: JSON.stringify(payload) });
+    const graph = await api("/api/v1/trail/live-scanner", { method: "POST", body: JSON.stringify(payload) });
     if (requestId !== state.request) return;
     acceptGraph(graph);
     const provider = graph.live_metadata?.provider || graph.live_metadata?.data_provider || "Explorer Multichain";
-    $("#live-status").textContent = `${provider}: ${graph.edges.filter(isLiveTransfer).length} transfer asli ditampilkan. Tautan explorer menyesuaikan chain. Kandidat pivot ditandai terpisah.`;
+    const activity = graph.live_metadata?.activity || [];
+    const count = graph.edges.filter(isLiveTransfer).length;
+    $("#live-status").textContent = payload.source_chain === "SOLANA" ? `${provider}: ${activity.length} signature tercatat, ${count} transfer SOL terurai. Aktivitas token/instruksi lain dapat dilihat melalui signature di detail akun.` : payload.source_chain === "BTC" ? `${provider}: ${count} relasi UTXO diamati. Output merupakan kemungkinan aliran; change dan pemiliknya belum diketahui.` : `${provider}: ${count} transfer asli ditampilkan. Kandidat pivot belum membuktikan perpindahan dana lintas chain.`;
   } catch (error) {
     if (requestId !== state.request) return;
     failTrace(error, true);
@@ -208,11 +219,13 @@ async function traceLive() {
 
 function isLiveRecord(record) {
   const source = String(record?.metadata?.evidence_source || "").toUpperCase();
-  return record?.metadata?.simulation === false || record?.metadata?.is_live === true || (/ETHERSCAN|BLOCKSCOUT|MAINNET/.test(source) && !/SIMULAT|FIXTURE|SEEDED/.test(source));
+  return record?.metadata?.simulation === false || record?.metadata?.is_live === true || (/ETHERSCAN|BLOCKSCOUT|MAINNET|MEMPOOL|BLOCKSTREAM|SOLANA_RPC/.test(source) && !/SIMULAT|FIXTURE|SEEDED/.test(source));
 }
 
 const chains = {
-  ETHEREUM: { badge: "ETH", color: "#ad93ff", host: "etherscan.io", id: 1 },
+  BTC: { badge: "BTC", color: "#f5a14d", host: "mempool.space", family: "BITCOIN" },
+  SOLANA: { badge: "SOL", color: "#b094ff", host: "solscan.io", family: "SOLANA" },
+  ETHEREUM: { badge: "ETH", color: "#619cf8", host: "etherscan.io", id: 1 },
   BSC: { badge: "BSC", color: "#efcf65", host: "bscscan.com", id: 56 },
   POLYGON: { badge: "POLY", color: "#bc8cff", host: "polygonscan.com", id: 137 },
   ARBITRUM: { badge: "ARB", color: "#6eb9f6", host: "arbiscan.io", id: 42161 },
@@ -221,28 +234,127 @@ const chains = {
   TRON: { badge: "TRON", color: "#f39185", host: "tronscan.org", id: null },
 };
 function chainName(value) {
-  return ({ ETHEREUM_ERC20: "ETHEREUM", BSC_BEP20: "BSC", TRON_TRC20: "TRON" })[value] || value || "ETHEREUM";
+  return ({ BITCOIN: "BTC", SOL: "SOLANA", ETH: "ETHEREUM", ETHEREUM_ERC20: "ETHEREUM", BSC_BEP20: "BSC", TRON_TRC20: "TRON" })[String(value || "").toUpperCase()] || String(value || "ETHEREUM").toUpperCase();
 }
 function chainInfo(record) { return chains[chainName(typeof record === "string" ? record : record?.chain || record?.metadata?.chain)] || null; }
 function isCandidateEdge(record) {
   return /CANDIDATE|UNVERIFIED/.test(String(record?.metadata?.correlation_status || "")) || record?.metadata?.is_candidate === true || /CANDIDATE/.test(record?.edge_type || "") || (record?.edge_type === "CROSS_CHAIN_BRIDGE" && isLiveRecord(record) && record?.metadata?.bridge_link_verified !== true);
 }
 function isBridgeEdge(record) { return /CROSS_CHAIN|BRIDGE_PIVOT/.test(record?.edge_type || ""); }
-function isLiveTransfer(record) { return isLiveRecord(record) && !isCandidateEdge(record) && !isBridgeEdge(record) && /^0x[a-fA-F0-9]{64}$/.test(record?.tx_hash || ""); }
+function scannerLabel(value) {
+  const labels = { MEMPOOL_SPACE: "Mempool.space", BLOCKSTREAM_ESPLORA: "Blockstream Esplora", SOLANA_MAINNET_RPC: "Solana Mainnet RPC", ETHERSCAN_V2: "Etherscan V2", SCENARIO_FIXTURE: "Skenario sintetis" };
+  return String(value || "").split(",").map((name) => labels[name.trim()] || friendly(name.trim())).join(" · ");
+}
+function isLiveTransfer(record) {
+  if (!isLiveRecord(record) || isCandidateEdge(record) || isBridgeEdge(record)) return false;
+  const chain = chainName(record.chain || record.metadata?.chain || record.chain_branch || record.metadata?.chain_branch);
+  return chain === "BTC" ? /^[a-fA-F0-9]{64}$/.test(record.tx_hash || "") : chain === "SOLANA" ? /^[1-9A-HJ-NP-Za-km-z]{80,90}$/.test(record.tx_hash || "") : /^0x[a-fA-F0-9]{64}$/.test(record.tx_hash || "");
+}
 function explorerLink(kind, value, label, record = {}) {
   const name = chainName(record.chain || record.metadata?.chain), config = chains[name];
   if (!config) return null;
-  const pattern = name === "TRON" ? kind === "address" ? /^T[A-Za-z0-9]{20,99}$/ : /^(?:0x)?[a-fA-F0-9]{64}$/ : kind === "address" ? /^0x[a-fA-F0-9]{40}$/ : /^0x[a-fA-F0-9]{64}$/;
+  const pattern = name === "BTC" ? kind === "address" ? /^(?:bc1[a-zA-HJ-NP-Z0-9]{11,87}|[13][1-9A-HJ-NP-Za-km-z]{25,34})$/i : /^[a-fA-F0-9]{64}$/ : name === "SOLANA" ? kind === "address" ? /^[1-9A-HJ-NP-Za-km-z]{32,44}$/ : /^[1-9A-HJ-NP-Za-km-z]{80,90}$/ : name === "TRON" ? kind === "address" ? /^T[A-Za-z0-9]{20,99}$/ : /^(?:0x)?[a-fA-F0-9]{64}$/ : kind === "address" ? /^0x[a-fA-F0-9]{40}$/ : /^0x[a-fA-F0-9]{64}$/;
   if (!pattern.test(value || "")) return null;
-  const expected = name === "TRON" ? `https://${config.host}/#/${kind === "tx" ? "transaction" : "address"}/${value}` : `https://${config.host}/${kind}/${value}`;
+  const expected = name === "TRON" ? `https://${config.host}/#/${kind === "tx" ? "transaction" : "address"}/${value}` : `https://${config.host}/${name === "SOLANA" && kind === "address" ? "account" : kind}/${value}`;
   if (record.explorer_url) {
-    try { const supplied = new URL(record.explorer_url); if (supplied.href.toLowerCase() !== expected.toLowerCase() || supplied.username || supplied.password) return null; } catch { return null; }
+    try {
+      const supplied = new URL(record.explorer_url);
+      const same = name === "SOLANA" ? supplied.href === expected : supplied.href.toLowerCase() === expected.toLowerCase();
+      if (!same || supplied.username || supplied.password) return null;
+    } catch { return null; }
   }
-  const link = el("a", "explorer-link", label || `↗ Lihat ${kind === "address" ? "wallet" : "transaksi"} di ${config.host}`);
-  link.href = record.explorer_url || expected;
-  link.target = "_blank";
-  link.rel = "noopener noreferrer";
+  const link = el("a", "explorer-link", label || `↗ Lihat ${kind === "address" ? "alamat" : "transaksi"} di ${config.host}`);
+  link.href = expected; link.target = "_blank"; link.rel = "noopener noreferrer";
   return link;
+}
+
+const livePresets = {
+  BTC: { address: "bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", label: "Bitcoin", note: "Contoh alamat Bitcoin publik. UTXO output dan change tidak membuktikan kepemilikan atau atribusi dana laporan." },
+  SOLANA: { address: "So11111111111111111111111111111111111111112", label: "Solana", note: "Contoh akun publik mint Wrapped SOL, bukan wallet seseorang. Signature dapat memuat instruksi token yang tidak menjadi edge transfer SOL native." },
+  ETHEREUM: { address: "0xf977814e90da44bfa03b6295a0616a897441acec", label: "Ethereum", note: "Contoh alamat publik Ethereum. Aktivitas transaksi bukan bukti bahwa dana berasal dari laporan IASC." },
+};
+function configureLiveChain(usePreset = true) {
+  const chain = $("#live-chain").value, native = ["BTC", "SOLANA"].includes(chain);
+  const preset = livePresets[chain] || { ...livePresets.ETHEREUM, label: chain, note: "Contoh alamat EVM publik. Ketersediaan aktivitas dan akses scanner berbeda untuk setiap chain." };
+  if (usePreset) $("#live-wallet").value = preset.address;
+  $("#live-wallet").placeholder = chain === "BTC" ? "bc1… / 1… / 3…" : chain === "SOLANA" ? "Alamat Base58 Solana…" : "0x… (40 karakter heksadesimal)";
+  $("#live-preset-button").textContent = `Gunakan contoh ${preset.label}`;
+  $("#live-address-note").textContent = preset.note;
+  $("#api-key-option").hidden = native;
+  $("#api-key-note").hidden = native;
+  $("#cross-chain-option").hidden = native;
+  $("#live-cross-chain").disabled = native;
+  if (native) $("#live-cross-chain").checked = false;
+  $("#live-token").disabled = native;
+  if (native) $("#live-token").value = "ALL";
+  $("#live-wallet").setCustomValidity("");
+}
+function validateLiveAddress() {
+  const chain = $("#live-chain").value, address = $("#live-wallet").value.trim();
+  const valid = chain === "BTC" ? /^(?:bc1[a-zA-HJ-NP-Z0-9]{11,87}|[13][1-9A-HJ-NP-Za-km-z]{25,34})$/i.test(address) : chain === "SOLANA" ? /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(address) : /^0x[a-fA-F0-9]{40}$/.test(address);
+  $("#live-wallet").setCustomValidity(valid ? "" : `Format alamat ${chain} belum sesuai. Gunakan alamat mainnet untuk chain yang dipilih.`);
+  return valid;
+}
+
+function renderStepper() {
+  const liveOnly = state.graph?.simulation === false && !state.graph.nodes.some((node) => node.node_zone === "FIAT_BANK");
+  for (const item of document.querySelectorAll(".investigation-stepper li")) {
+    const step = Number(item.dataset.step), skipped = liveOnly && step < 3;
+    item.classList.toggle("active", step === state.currentStep);
+    item.classList.toggle("skipped", skipped);
+    item.setAttribute("aria-current", step === state.currentStep ? "step" : "false");
+    item.querySelector("small").textContent = skipped ? "Dilewati · mulai dari alamat publik" : ["FNA’s Money Trails", "Temukan sebaran chain", "BTC · Solana · Ethereum", "Diputuskan PUJK / PAKD"][step - 1];
+  }
+}
+function caseChains() {
+  const found = new Set((state.graph?.chain_dispersals || []).map((item) => chainName(item.chain)));
+  for (const node of state.graph?.nodes || []) if (node.node_zone === "ONCHAIN_WALLET" && (node.chain || node.metadata?.chain)) found.add(chainName(node.chain || node.metadata.chain));
+  const order = (chain) => { const index = ["BTC", "SOLANA", "ETHEREUM"].indexOf(chain); return index < 0 ? 100 : index; };
+  return [...found].sort((a, b) => order(a) - order(b) || a.localeCompare(b));
+}
+function setChainFilter(chain, nodeId) {
+  if (!state.graph) return;
+  stopAnimation(); state.chainFilter = chain;
+  renderCaseSummary(); renderGraph(); fitGraph();
+  const visibleIds = new Set(state.viewNodes.map((node) => node.id));
+  if (nodeId && visibleIds.has(nodeId)) selectNode(nodeId);
+  else if (state.selected && !visibleIds.has(state.selected)) selectNode(state.viewNodes.find((node) => node.node_zone === "ONCHAIN_WALLET")?.id || state.viewNodes[0]?.id);
+}
+function renderCaseSummary() {
+  const graph = state.graph;
+  if (!graph) return;
+  const dispersals = graph.chain_dispersals || [], available = caseChains(), live = graph.simulation === false;
+  const handoff = graph.fna_handoff || {};
+  const pakd = graph.nodes.find((node) => node.node_type === "PAKD_USER_ACCOUNT")?.entity_label || "PAKD";
+  $("#executive-title").textContent = live ? `Aktivitas publik ${available.join(" · ") || "blockchain"}` : dispersals.length ? `${dispersals.length} withdrawal, ${new Set(dispersals.map((row) => chainName(row.chain))).size} jalur blockchain` : "Ikuti alur perkara dan titik tindak lanjut";
+  if (live) {
+    const activity = graph.live_metadata?.activity || [];
+    $("#executive-narrative").textContent = `Scanner mengamati ${graph.nodes.filter((node) => node.node_zone === "ONCHAIN_WALLET").length} simpul on-chain dan ${graph.edges.filter(isLiveTransfer).length} relasi transaksi publik${activity.length ? `, dari ${activity.length} signature aktivitas` : ""}. Atribusi terhadap dana laporan dan kepemilikan alamat belum terbukti.${available.includes("BTC") ? " Jalur BTC menampilkan kemungkinan output UTXO; change dan pemiliknya belum diketahui." : ""}`;
+  } else {
+    const route = [handoff.victim_pujk_name, handoff.last_fna_pujk_name, pakd].filter((value, index, list) => value && list.indexOf(value) === index).join(" → ");
+    const split = dispersals.map((row) => `${chainInfo(row.chain)?.badge || row.chain} ${idr(row.fiat_value_idr)} (${number(row.crypto_amount, 6)} ${row.token_symbol})`).join("; ");
+    const withdrawn = dispersals.reduce((sum, row) => sum + Number(row.fiat_value_idr), 0);
+    $("#executive-narrative").textContent = `Laporan ${idr(graph.total_scam_idr)} mengikuti jalur ${route || "FNA → PAKD"}.${dispersals.length ? ` Mirror API menemukan withdrawal senilai ${idr(withdrawn)}: ${split}.` : " Pencocokan hanya diteruskan jika bukti PAKD tersedia."} Pilih chain untuk mengikuti jalurnya, lalu tinjau rekomendasi pada titik akhir. Semua data perkara ini sintetis.`;
+  }
+  const cards = dispersals.length ? dispersals.map((row) => ({ ...row, canonical: chainName(row.chain) })) : available.map((chain) => ({ chain, canonical: chain, scanner_provider: graph.live_metadata?.scanner_provider || graph.live_metadata?.provider || "Scanner publik" }));
+  $("#chain-dispersal-cards").replaceChildren(...cards.map((row) => {
+    const chain = row.canonical, info = chainInfo(chain), button = el("button", `chain-card${state.chainFilter === chain ? " active" : ""}`);
+    button.type = "button"; button.style.setProperty("--chain-color", info?.color || "#ad93ff"); button.dataset.chain = chain; button.setAttribute("aria-pressed", String(state.chainFilter === chain));
+    button.append(el("span", "chain-card-title", `${info?.badge || chain} · ${chain === "BTC" ? "Bitcoin" : chain === "SOLANA" ? "Solana" : friendly(chain)}`));
+    button.append(el("strong", "", row.fiat_value_idr !== undefined ? idr(row.fiat_value_idr) : `${graph.nodes.filter((node) => node.node_zone === "ONCHAIN_WALLET" && chainName(node.chain || node.metadata?.chain) === chain).length} simpul publik`));
+    button.append(el("span", "chain-card-amount", row.crypto_amount !== undefined ? `${number(row.crypto_amount, 6)} ${row.token_symbol}` : scannerLabel(row.scanner_provider)));
+    if (row.crypto_amount !== undefined) button.append(el("span", "chain-card-scanner", `Scanner: ${scannerLabel(row.scanner_provider || "SCENARIO_FIXTURE")}`));
+    button.append(el("small", "", row.initial_wallet_address ? `Awal: ${short(row.initial_wallet_address, 22)}` : "Sampel aktivitas scanner asli"));
+    button.append(el("span", "chain-card-status", row.endpoint_status ? friendly(row.endpoint_status) : "Atribusi belum terbukti"), el("span", "chain-card-cta", `Lihat jalur ${info?.badge || chain} →`));
+    button.addEventListener("click", () => setChainFilter(chain, row.initial_node_id));
+    return button;
+  }));
+  const filters = ["ALL", "BTC", "SOLANA", "ETHEREUM", ...available.filter((chain) => !["BTC", "SOLANA", "ETHEREUM"].includes(chain))];
+  $("#chain-filters").replaceChildren(el("span", "filter-caption", "LIHAT JALUR"), ...filters.map((chain) => {
+    const button = el("button", state.chainFilter === chain ? "active" : "", chain === "ALL" ? "Semua Chain" : chain);
+    button.type = "button"; button.dataset.chain = chain; button.disabled = chain !== "ALL" && !available.includes(chain); button.setAttribute("aria-pressed", String(state.chainFilter === chain));
+    button.addEventListener("click", () => setChainFilter(chain)); return button;
+  }));
 }
 
 function renderMetrics() {
@@ -251,12 +363,12 @@ function renderMetrics() {
   $("#source-tag").textContent = live ? "LIVE · MULTICHAIN" : "LAB · SIMULASI";
   $("#source-tag").classList.toggle("is-live", live);
   $("#case-id").textContent = live ? `LIVE MAINNET · ${short(graph.trace_id, 15)}` : `${graph.iasc_ticket_id} · ${graph.fna_trail_id}`;
-  $("#metric-loss-label").textContent = live ? "WALLET TERAMATI" : "TOTAL KERUGIAN";
+  $("#metric-loss-label").textContent = live ? "SIMPUL ON-CHAIN" : "TOTAL KERUGIAN";
   $("#metric-loss").textContent = live ? String(graph.nodes.filter((node) => node.node_zone === "ONCHAIN_WALLET").length) : idr(graph.total_scam_idr);
-  $("#metric-loss-note").textContent = live ? "Alamat pada sampel mainnet" : "Nilai laporan korban";
-  $("#metric-traced-label").textContent = live ? "TRANSFER MAINNET" : "DANA TERLACAK";
+  $("#metric-loss-note").textContent = live ? "Alamat / transaksi pada sampel mainnet" : "Nilai laporan korban";
+  $("#metric-traced-label").textContent = live ? (graph.live_metadata?.source_chain === "BTC" ? "RELASI UTXO" : "TRANSFER MAINNET") : "DANA TERLACAK";
   $("#metric-traced").textContent = live ? String(graph.edges.filter(isLiveTransfer).length) : idr(graph.total_traced_idr);
-  $("#metric-crypto").textContent = live ? `${graph.live_metadata?.provider || "Explorer publik"} · sampel terbatas` : `${number(graph.total_traced_usdt)} USDT · ekuivalen demo`;
+  $("#metric-crypto").textContent = live ? `${graph.live_metadata?.provider || "Explorer publik"} · sampel terbatas` : `${(graph.chain_dispersals || []).length} withdrawal · ${(new Set((graph.chain_dispersals || []).map((row) => row.chain))).size} chain · sintetis`;
   $("#metric-hops").replaceChildren(document.createTextNode(`${graph.hop_count ?? graph.edges.length} `), el("em", "", "hop"));
   const pct = Number(graph.total_scam_idr) > 0 ? Math.min(100, Number(graph.recoverable_amount_idr) / Number(graph.total_scam_idr) * 100) : 0;
   $("#metric-recovery").textContent = live ? "—" : `${number(pct, 1)}%`;
@@ -272,7 +384,7 @@ function renderMetrics() {
 function nodeTheme(node) {
   const type = String(node.node_type || "").toUpperCase();
   if (node.is_bridge_node || /BRIDGE_PROTOCOL|BRIDGE_CONTRACT/.test(type)) return { color: "#57d8ef", dark: "#12323d", icon: "🌉", marker: "cyan" };
-  if (node.node_zone === "ONCHAIN_WALLET") return { color: chainInfo(node)?.color || "#ad93ff", dark: "#231d3d", icon: type.includes("DEX") ? "⇄" : type.includes("DEPOSIT") ? "▥" : type.includes("BRIDGE") ? "⇆" : "◇", marker: "purple" };
+  if (node.node_zone === "ONCHAIN_WALLET") return { color: chainInfo(node)?.color || "#ad93ff", dark: "#231d3d", icon: type.includes("TRANSACTION") ? "⇢" : type.includes("DEX") ? "⇄" : type.includes("DEPOSIT") ? "▥" : type.includes("BRIDGE") ? "⇆" : "◇", marker: "purple" };
   if (node.node_zone === "CRYPTO_EXCHANGE_BRIDGE") return { color: "#efb75f", dark: "#342a1c", icon: /MERCHANT|ESCROW/.test(type) ? "↔" : "▥", marker: "amber" };
   return { color: "#579afa", dark: "#16283f", icon: /VICTIM/.test(type) ? "○" : /MERCHANT/.test(type) ? "↔" : "▣", marker: "blue" };
 }
@@ -293,56 +405,80 @@ function decisionStyle(decision) {
   return { label: "BELUM DIKIRIM", short: "BELUM DIKIRIM", color: "#8196b0", className: "not-sent", icon: "○" };
 }
 
+function visibleGraph() {
+  const graph = state.graph, byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const parents = new Map(graph.nodes.map((node) => [node.id, []]));
+  for (const edge of graph.edges) if (parents.has(edge.target)) parents.get(edge.target).push(edge.source);
+  const branches = new Map();
+  function branch(nodeId, visited = new Set()) {
+    if (branches.has(nodeId)) return branches.get(nodeId);
+    if (visited.has(nodeId)) return null;
+    visited.add(nodeId);
+    const node = byId.get(nodeId);
+    if (!node) return null;
+    const explicit = node.chain_branch || node.metadata?.chain_branch || (node.node_zone === "ONCHAIN_WALLET" ? node.chain || node.metadata?.chain : null);
+    if (explicit) { const name = chainName(explicit); branches.set(nodeId, name); return name; }
+    const inherited = new Set((parents.get(nodeId) || []).map((id) => branch(id, new Set(visited))).filter(Boolean));
+    const result = inherited.size === 1 ? [...inherited][0] : null;
+    branches.set(nodeId, result); return result;
+  }
+  for (const node of graph.nodes) branch(node.id);
+  const requestTargets = new Set((graph.governance_requests || []).map((request) => request.target_node_id));
+  const hidden = new Set(graph.nodes.filter((node) => /^(PAKD_FIAT_DEPOSIT|PAKD_CRYPTO_CONVERSION)$/.test(node.node_type) && !requestTargets.has(node.id)).map((node) => node.id));
+  const visible = graph.nodes.filter((node) => !hidden.has(node.id) && (state.chainFilter === "ALL" || !branches.get(node.id) || branches.get(node.id) === state.chainFilter));
+  const visibleIds = new Set(visible.map((node) => node.id)), edges = [];
+  const outgoing = new Map(graph.nodes.map((node) => [node.id, []]));
+  for (const edge of graph.edges) if (outgoing.has(edge.source)) outgoing.get(edge.source).push(edge);
+  for (const node of visible) {
+    const walk = (edge, path, visited) => {
+      if (visibleIds.has(edge.target)) {
+        edges.push(path.length ? { ...edge, id: `summary:${[...path, edge.id].join(":")}`, source: node.id, label: "Pencocokan & konversi PAKD", metadata: { ...edge.metadata, collapsed_api_steps: [...path, edge.id] } } : edge);
+      } else if (hidden.has(edge.target) && !visited.has(edge.target)) {
+        const nextVisited = new Set(visited); nextVisited.add(edge.target);
+        for (const next of outgoing.get(edge.target) || []) walk(next, [...path, edge.id], nextVisited);
+      }
+    };
+    for (const edge of outgoing.get(node.id) || []) walk(edge, [], new Set([node.id]));
+  }
+  state.branchByNode = branches;
+  return { nodes: visible, edges };
+}
 function layoutNodes() {
-  const nodes = state.graph.nodes;
-  const edges = state.graph.edges;
-  if (state.graph.simulation === false) {
-    const groups = new Map();
-    for (const node of nodes) {
-      const rank = Math.max(0, Number(node.hop) || 0);
-      if (!groups.has(rank)) groups.set(rank, []);
-      groups.get(rank).push(node);
-    }
+  const view = visibleGraph(); state.viewNodes = view.nodes; state.viewEdges = view.edges;
+  state.viewportWidth = Math.max(300, $("#graph-scroll").clientWidth);
+  const shared = view.nodes.filter((node) => !state.branchByNode.get(node.id));
+  const sharedRanks = [...new Set(shared.map((node) => Number(node.hop) || 0))].sort((a, b) => a - b);
+  const sharedWidth = shared.length ? Math.max(325, 90 + sharedRanks.length * 145) : 0;
+  const branchNames = caseChains().filter((chain) => state.chainFilter === "ALL" || state.chainFilter === chain);
+  state.positions.clear(); state.lanes = [];
+  let top = 58, furthest = sharedWidth + 180;
+  for (const chain of branchNames) {
+    const nodes = view.nodes.filter((node) => state.branchByNode.get(node.id) === chain), groups = new Map();
+    for (const node of nodes) { const hop = Number(node.hop) || 0; if (!groups.has(hop)) groups.set(hop, []); groups.get(hop).push(node); }
     const ranks = [...groups.keys()].sort((a, b) => a - b);
-    state.baseWidth = Math.max($("#graph-scroll").clientWidth, ranks.length * 190);
-    state.baseHeight = Math.max($("#graph-scroll").clientHeight, ...[...groups.values()].map((group) => group.length * 130 + 70));
-    state.labelLength = 20;
-    state.positions.clear();
-    ranks.forEach((rank, column) => groups.get(rank).forEach((node, index) => state.positions.set(node.id, {x: 95 + column * 190, y: 90 + index * 130})));
-    $("#graph").setAttribute("viewBox", `0 0 ${$("#graph-scroll").clientWidth} ${state.baseHeight}`);
-    $("#graph").style.height = `${state.baseHeight}px`;
-    $("#graph").style.width = "100%";
-    return;
+    const height = Math.max(225, ...[...groups.values()].map((group) => group.length * 155 + 70));
+    state.lanes.push({ chain, top, height });
+    ranks.forEach((rank, column) => groups.get(rank).forEach((node, index, group) => {
+      state.positions.set(node.id, { x: sharedWidth + 100 + column * 185, y: top + height / 2 - 20 + (index - (group.length - 1) / 2) * 155 });
+    }));
+    furthest = Math.max(furthest, sharedWidth + 100 + Math.max(0, ranks.length - 1) * 185 + 110);
+    top += height + 14;
   }
-  $("#graph").style.width = "100%";
-  const incoming = new Map(nodes.map((node) => [node.id, 0]));
-  const next = new Map(nodes.map((node) => [node.id, []]));
-  for (const edge of edges) if (incoming.has(edge.target) && next.has(edge.source)) { incoming.set(edge.target, incoming.get(edge.target) + 1); next.get(edge.source).push(edge.target); }
-  const queue = nodes.filter((node) => incoming.get(node.id) === 0).map((node) => node.id);
-  const ranks = new Map(nodes.map((node) => [node.id, 0]));
-  for (let index = 0; index < queue.length; index++) for (const target of next.get(queue[index]) || []) {
-    ranks.set(target, Math.max(ranks.get(target), ranks.get(queue[index]) + 1));
-    incoming.set(target, incoming.get(target) - 1);
-    if (incoming.get(target) === 0) queue.push(target);
-  }
-  const groups = new Map();
-  for (const node of nodes) { const rank = ranks.get(node.id); if (!groups.has(rank)) groups.set(rank, []); groups.get(rank).push(node); }
-  const maxRank = Math.max(0, ...ranks.values());
-  const width = Math.max(300, $("#graph-scroll").clientWidth);
-  const columns = Math.min(5, maxRank + 1, Math.max(2, Math.floor((width - 20) / 170)));
-  state.baseWidth = width;
-  state.baseHeight = Math.max($("#graph-scroll").clientHeight, (Math.floor(maxRank / columns) + 1) * 220 + 10);
-  state.labelLength = columns === 1 ? 23 : Math.max(13, Math.min(23, Math.floor((width - 160) / (columns - 1) / 7)));
-  state.positions.clear();
-  for (const [rank, group] of groups) group.forEach((node, index) => {
-    const row = Math.floor(rank / columns);
-    const col = row % 2 ? columns - 1 - rank % columns : rank % columns;
-    const x = columns === 1 ? width / 2 : 80 + col * (width - 160) / (columns - 1);
-    const y = 90 + row * 220 + (index - (group.length - 1) / 2) * 120;
-    state.positions.set(node.id, { x, y });
+  state.baseHeight = Math.max(300, top + 10, ...sharedRanks.map((rank) => shared.filter((node) => (Number(node.hop) || 0) === rank).length * 160 + 70));
+  sharedRanks.forEach((rank, column) => {
+    const group = shared.filter((node) => (Number(node.hop) || 0) === rank);
+    group.forEach((node, index) => state.positions.set(node.id, { x: 80 + column * 145, y: state.baseHeight / 2 - 20 + (index - (group.length - 1) / 2) * 160 }));
   });
-  $("#graph").setAttribute("viewBox", `0 0 ${state.baseWidth} ${state.baseHeight}`);
-  $("#graph").style.height = `${state.baseHeight}px`;
+  state.baseWidth = Math.max(400, furthest); state.labelLength = 21;
+  const svg = $("#graph"); svg.setAttribute("viewBox", `0 0 ${state.viewportWidth} ${$("#graph-scroll").clientHeight || 500}`); svg.style.height = "100%"; svg.style.width = "100%";
+  const labels = [];
+  if (shared.length) labels.push(svgEl("text", { x: 25, y: 25, class: "swimlane-heading" }, "HANDOFF FNA → PAKD MIRROR API"));
+  for (const lane of state.lanes) {
+    const info = chainInfo(lane.chain);
+    labels.push(svgEl("rect", { x: sharedWidth + 8, y: lane.top, width: state.baseWidth - sharedWidth - 20, height: lane.height, rx: 14, class: "swimlane-bg", fill: info?.color, "fill-opacity": .035, stroke: info?.color, "stroke-opacity": .18 }));
+    labels.push(svgEl("text", { x: sharedWidth + 25, y: lane.top + 25, class: "swimlane-heading", fill: info?.color }, `${lane.chain} · ${lane.chain === "BTC" ? "Bitcoin Scanner" : lane.chain === "SOLANA" ? "Solana Scanner" : "EVM Scanner"}`));
+  }
+  $("#swimlanes").replaceChildren(...labels);
 }
 
 function edgeGeometry(source, target, index = 0, count = 1) {
@@ -369,12 +505,12 @@ function renderGraph() {
   if (!state.graph) return;
   layoutNodes();
   const parallelEdges = new Map();
-  for (const edge of state.graph.edges) {
+  for (const edge of state.viewEdges) {
     const key = JSON.stringify([edge.source, edge.target]);
     if (!parallelEdges.has(key)) parallelEdges.set(key, []);
     parallelEdges.get(key).push(edge.id);
   }
-  const edgeElements = state.graph.edges.map((edge) => {
+  const edgeElements = state.viewEdges.map((edge) => {
     const source = state.positions.get(edge.source), target = state.positions.get(edge.target);
     if (!source || !target) return null;
     const fromNode = state.graph.nodes.find((node) => node.id === edge.source);
@@ -396,7 +532,7 @@ function renderGraph() {
     return group;
   }).filter(Boolean);
   $("#edges").replaceChildren(...edgeElements);
-  $("#nodes").replaceChildren(...state.graph.nodes.map((node) => {
+  $("#nodes").replaceChildren(...state.viewNodes.map((node) => {
     const { x, y } = state.positions.get(node.id);
     const theme = nodeTheme(node);
     const selected = node.id === state.selected;
@@ -409,7 +545,7 @@ function renderGraph() {
     group.append(svgEl("circle", { class: "node-halo", r: initial ? 39 : 35, fill: "none", stroke: theme.color, "stroke-width": initial ? 1.5 : .7, opacity: initial ? .6 : .2 }));
     group.append(svgEl("circle", { class: "node-core", r: 26, fill: theme.dark, stroke: lock ? decisionTheme.color : theme.color, "stroke-width": 1.2 }));
     group.append(svgEl("text", { class: "node-icon", y: 1, fill: theme.color }, theme.icon));
-    if (initial) group.append(svgEl("text", { class: "initial-label", y: -52 }, "INITIAL WALLET"));
+    if (initial) group.append(svgEl("text", { class: "initial-label", y: -52 }, "WALLET AWAL"));
     if (lock) {
       group.append(svgEl("circle", { cx: 23, cy: -21, r: 10, fill: "#163d2d", stroke: "#4caf81", "stroke-width": .8 }));
       group.append(svgEl("text", { class: "node-lock", x: 23, y: -17, fill: decisionTheme.color }, decisionTheme.icon));
@@ -425,7 +561,7 @@ function renderGraph() {
     }
     if (node.is_bridge_node && node.bridged_to_chain) group.append(svgEl("text", {class:"bridge-route-label",y:99,fill:"#81e1ed"}, `${chainInfo(node.bridged_from_chain || node.chain)?.badge || "?"} → ${chainInfo(node.bridged_to_chain)?.badge || "?"}`));
     group.append(svgEl("text", { class: "node-label", y: 54 }, short(node.label, state.labelLength)));
-    const subtitle = node.address ? short(node.address, 18) : node.account ? short(node.account, 18) : short(node.entity_label || friendly(node.node_type), 24);
+    const subtitle = node.asset && Number(node.crypto_amount) > 0 ? `${number(node.crypto_amount, 5)} ${node.asset}` : Number(node.amount_idr) > 0 ? compactIdr(node.amount_idr) : node.account ? short(node.account, 18) : node.address ? short(node.address, 18) : short(node.entity_label || friendly(node.node_type), 22);
     group.append(svgEl("text", { class: "node-subtitle", y: 70 }, subtitle));
     if (node.node_zone === "ONCHAIN_WALLET" && node.taint_score_pct != null) group.append(svgEl("text", { class: "taint-label", y: 84 }, `TAINT ${number(node.taint_score_pct, 1)}%`));
     else if (node.node_zone === "ONCHAIN_WALLET") group.append(svgEl("text", { class: "taint-label", y: 84 }, "BELUM TERATRIBUSI"));
@@ -448,15 +584,14 @@ function updateTransform() {
 }
 
 function resetView() {
-  if (state.graph?.simulation === false) { fitGraph(); return; }
-  state.scale = 1; state.x = 0; state.y = 0; $("#graph-scroll").scrollTop = 0; updateTransform();
+  fitGraph();
 }
 
 function fitGraph() {
   const board = $("#graph-scroll");
   state.scale = Math.max(.01, Math.min(1, (board.clientWidth - 20) / state.baseWidth, (board.clientHeight - 15) / state.baseHeight));
   state.x = (board.clientWidth - state.baseWidth * state.scale) / 2;
-  state.y = 0;
+  state.y = Math.max(0, (board.clientHeight - state.baseHeight * state.scale) / 2);
   board.scrollTop = 0;
   board.scrollLeft = 0;
   updateTransform();
@@ -506,7 +641,7 @@ function addDetail(list, label, value, className = "") {
 
 function renderInspector() {
   const inspector = $("#inspector");
-  const edge = state.graph?.edges.find((candidate) => candidate.id === state.selectedEdge);
+  const edge = state.viewEdges.find((candidate) => candidate.id === state.selectedEdge) || state.graph?.edges.find((candidate) => candidate.id === state.selectedEdge);
   if (edge) {
     const details = el("dl", "detail-list");
     addDetail(details, "Jaringan", `${edge.chain || edge.metadata?.chain || "—"}${edge.chain_id ? ` [${edge.chain_id}]` : ""}`);
@@ -521,6 +656,9 @@ function renderInspector() {
     addDetail(details, "Nilai transfer", edge.asset && edge.crypto_amount != null ? `${number(edge.crypto_amount, 12)} ${edge.asset}` : idr(edge.amount_idr));
     addDetail(details, "Waktu · WIB", edge.timestamp ? dateTime(edge.timestamp) : null);
     addDetail(details, "TX hash", edge.tx_hash, "mono");
+    if (edge.metadata?.collapsed_api_steps) addDetail(details, "Ringkasan visual", "Langkah pencocokan dan konversi PAKD diringkas. Bukti aslinya tersedia di Log API & Mirror DB.");
+    if (chainName(edge.chain || edge.metadata?.chain) === "BTC") addDetail(details, "Atribusi UTXO", "Kemungkinan aliran output; change dan pemilik belum diketahui. Bukan jumlah dana laporan yang terkonfirmasi.");
+    addDetail(details, "Scanner", scannerLabel(edge.scanner_provider || edge.metadata?.scanner_provider));
     addDetail(details, "Kontrak token", edge.metadata?.token_contract || edge.metadata?.contract_address, "mono");
     inspector.replaceChildren(el("div", "inspector-type", "DETAIL TRANSAKSI"), el("h3", "", edge.label || friendly(edge.edge_type)), el("p", "inspector-entity", isCandidateEdge(edge) ? "Kandidat pivot lintas chain · belum terkonfirmasi" : isLiveRecord(edge) ? "Transaksi publik multichain asli · atribusi belum terbukti" : "Bukti sintetis untuk demonstrasi"), details);
     const link = isLiveRecord(edge) ? explorerLink("tx", edge.tx_hash, undefined, edge) : null;
@@ -551,7 +689,7 @@ function renderInspector() {
   const decisionTheme = decisionStyle(decision);
   const status = el("span", `status-pill decision-${decisionTheme.className}`, decision ? `${decisionTheme.icon} ${decisionTheme.label}` : isLiveRecord(node) ? "● DATA PUBLIK MULTICHAIN" : "● Bukti sintetis · untuk peninjauan");
   const details = el("dl", "detail-list");
-  addDetail(details, "Zona arsitektur", zoneLabels[node.node_zone]);
+  addDetail(details, "Scanner", scannerLabel(node.scanner_provider || node.metadata?.scanner_provider));
   addDetail(details, "Rekening / akun", node.account, "mono");
   addDetail(details, "Alamat blockchain", node.address, "mono");
   addDetail(details, "Jaringan", `${node.chain || "—"}${node.chain_id ? ` [${node.chain_id}]` : ""}`);
@@ -559,6 +697,7 @@ function renderInspector() {
   if (node.is_bridge_node) addDetail(details, "Jalur bridge", `${node.bridged_from_chain || node.chain || "?"} → ${node.bridged_to_chain || "belum diketahui"}`);
   if (node.metadata?.discovery === "SAME_ADDRESS_ACTIVITY_ONLY") addDetail(details, "Korelasi lintas chain", "Aktivitas alamat yang sama; belum ada bukti perpindahan dana/bridge antar-chain.");
   addDetail(details, "Nominal terkait", Number(node.amount_idr) > 0 ? idr(node.amount_idr) : null);
+  if (node.metadata?.tx_hash) addDetail(details, "TX hash", node.metadata.tx_hash, "mono");
   addDetail(details, "Sisa saldo teramati", node.metadata?.balance_status === "NOT_FETCHED" ? "Belum diambil" : node.asset && node.balance_crypto != null ? `${number(node.balance_crypto, 4)} ${node.asset}` : null, "detail-highlight");
   addDetail(details, "Jumlah aset", node.asset && Number(node.crypto_amount) > 0 ? `${number(node.crypto_amount, 4)} ${node.asset}` : null);
   if (node.node_zone === "ONCHAIN_WALLET" && node.taint_score_pct != null) {
@@ -568,35 +707,37 @@ function renderInspector() {
   }
   else if (node.node_zone === "ONCHAIN_WALLET") addDetail(details, "Taint score", "Belum teratribusi");
   const incoming = state.graph.edges.filter((edge) => edge.target === node.id && edge.tx_hash);
-  addDetail(details, "TX hash masuk", incoming.map((edge) => edge.tx_hash).join("\n"), "mono");
+  const technicalDetails = el("details", "technical-details"); technicalDetails.append(el("summary", "", "Detail bukti & metadata"));
+  const extra = el("dl", "detail-list"); technicalDetails.append(extra);
+  addDetail(extra, "TX hash masuk", incoming.map((edge) => edge.tx_hash).join("\n"), "mono");
   const metadata = node.metadata || {};
   const metadataLabels = { merchant_id: "ID merchant", scammer_uid: "UID akun terkait", uid: "UID akun", kyc_name: "Identitas KYC sintetis", owner_name: "Nama pemilik sintetis", owner: "Nama pemilik sintetis", platform_name: "Platform", platform: "Platform", heuristic_score: "Skor heuristik merchant", p2p_score: "Skor heuristik merchant", confidence: "Keyakinan kecocokan", balance_idr: "Sisa saldo rupiah", available_balance_idr: "Sisa saldo bank teramati", balance_source: "Sumber saldo", order_id: "Order escrow", data_source: "Sumber bukti", evidence_source: "Sumber bukti", note: "Catatan", notes: "Catatan" };
-  for (const [key, value] of Object.entries(metadata)) if (metadataLabels[key]) addDetail(details, metadataLabels[key], /balance_idr/.test(key) ? idr(value) : value, key === "available_balance_idr" ? "detail-highlight" : "");
-  addDetail(details, "NIK KYC · tersamarkan", metadata.kyc_nik_masked);
-  addDetail(details, "Referensi RRN", metadata.rrn_reference_number, "mono");
-  addDetail(details, "ID trail FNA", metadata.fna_trail_id, "mono");
+  for (const [key, value] of Object.entries(metadata)) if (metadataLabels[key]) addDetail(extra, metadataLabels[key], /balance_idr/.test(key) ? idr(value) : value, key === "available_balance_idr" ? "detail-highlight" : "");
+  addDetail(extra, "NIK KYC · tersamarkan", metadata.kyc_nik_masked);
+  addDetail(extra, "Referensi RRN", metadata.rrn_reference_number, "mono");
+  addDetail(extra, "ID trail FNA", metadata.fna_trail_id, "mono");
   if (metadata.kyc) {
-    addDetail(details, "Nama KYC sintetis", metadata.kyc.name);
-    addDetail(details, "Referensi dokumen KYC", metadata.kyc.document_ref, "mono");
-    addDetail(details, "Status KYC fixture", friendly(metadata.kyc.status));
+    addDetail(extra, "Nama KYC sintetis", metadata.kyc.name);
+    addDetail(extra, "Referensi dokumen KYC", metadata.kyc.document_ref, "mono");
+    addDetail(extra, "Status KYC fixture", friendly(metadata.kyc.status));
   }
   const mirror = metadata.mirror_deposit || metadata.mirror_match || metadata.mirror_lookup;
   if (mirror) {
-    addDetail(details, "Akses data PAKD", "REST API Consumer → PAKD Scoped Mirror API; SQL hanya di provider PAKD");
-    addDetail(details, "Sumber identitas", "Respons API PAKD sintetis · kecocokan teknis, bukan identitas pemilik live terverifikasi");
-    addDetail(details, "PAKD", mirror.pakd_name || mirror.pakd_code);
-    addDetail(details, "UID PAKD", mirror.user_uid || mirror.pakd_user_uid, "mono");
-    addDetail(details, "NIK tersamarkan", mirror.nik_masked || mirror.kyc_nik_masked, "mono");
-    addDetail(details, "Nama sintetis", mirror.kyc_name_masked);
-    addDetail(details, "Waktu deposit VA · WIB", (mirror.inflow_timestamp || mirror.deposit_timestamp) ? dateTime(mirror.inflow_timestamp || mirror.deposit_timestamp) : null);
-    addDetail(details, "Wallet terdaftar", mirror.initial_wallet_address || mirror.wallet_address, "mono");
-    addDetail(details, "Tipe wallet mirror", mirror.wallet_type);
+    addDetail(extra, "Akses data PAKD", "REST API Consumer → PAKD Scoped Mirror API; SQL hanya di provider PAKD");
+    addDetail(extra, "Sumber identitas", "Respons API PAKD sintetis · kecocokan teknis, bukan identitas pemilik live terverifikasi");
+    addDetail(extra, "PAKD", mirror.pakd_name || mirror.pakd_code);
+    addDetail(extra, "UID PAKD", mirror.user_uid || mirror.pakd_user_uid, "mono");
+    addDetail(extra, "NIK tersamarkan", mirror.nik_masked || mirror.kyc_nik_masked, "mono");
+    addDetail(extra, "Nama sintetis", mirror.kyc_name_masked);
+    addDetail(extra, "Waktu deposit VA · WIB", (mirror.inflow_timestamp || mirror.deposit_timestamp) ? dateTime(mirror.inflow_timestamp || mirror.deposit_timestamp) : null);
+    addDetail(extra, "Wallet terdaftar", mirror.initial_wallet_address || mirror.wallet_address, "mono");
+    addDetail(extra, "Tipe wallet mirror", mirror.wallet_type);
   }
   if (metadata.heuristic) {
-    addDetail(details, "Skor heuristik merchant", metadata.heuristic.score ?? metadata.heuristic.score_pct);
-    for (const [key, value] of Object.entries(metadata.heuristic)) if (!/score|score_pct/.test(key)) addDetail(details, friendly(key), value);
+    addDetail(extra, "Skor heuristik merchant", metadata.heuristic.score ?? metadata.heuristic.score_pct);
+    for (const [key, value] of Object.entries(metadata.heuristic)) if (!/score|score_pct/.test(key)) addDetail(extra, friendly(key), value);
   }
-  if (!incoming.length && metadata.tx_hashes) addDetail(details, "TX hashes", Array.isArray(metadata.tx_hashes) ? metadata.tx_hashes.join("\n") : metadata.tx_hashes, "mono");
+  if (!incoming.length && metadata.tx_hashes) addDetail(extra, "TX hashes", Array.isArray(metadata.tx_hashes) ? metadata.tx_hashes.join("\n") : metadata.tx_hashes, "mono");
   if (decision) {
     addDetail(details, "Institusi pemegang keputusan", `${decision.institution_category} · ${decision.institution_name}`);
     addDetail(details, "Konteks keputusan", decision.metadata?.historical ? "Riwayat pada snapshot FNA; terpisah dari tiket rekomendasi baru" : "Tiket governance pada trace aktif · simulasi");
@@ -605,14 +746,27 @@ function renderInspector() {
     addDetail(details, "Nominal disetujui institusi", idr(decision.approved_frozen_amount_idr));
   }
   inspector.replaceChildren(type, heading, entity, status, details);
+  if (extra.children.length) inspector.append(technicalDetails);
   if (isLiveRecord(node)) {
-    const link = explorerLink("address", node.address, undefined, node);
+    const ownTx = node.metadata?.tx_hash;
+    const link = ownTx ? explorerLink("tx", ownTx, undefined, node) : explorerLink("address", node.address, undefined, node);
     if (link) inspector.append(link);
     for (const edge of incoming.filter(isLiveRecord).slice(0, 5)) {
       const txLink = explorerLink("tx", edge.tx_hash, `↗ TX ${short(edge.tx_hash, 22)}`, edge);
       if (txLink) inspector.append(txLink);
     }
     addDetail(details, "Atribusi dana laporan", "Belum terbukti · transfer publik bukan ukuran kerugian/recovery");
+    if (chainName(node.chain || node.metadata?.chain) === "BTC") addDetail(details, "UTXO", "Output dan change tidak mengidentifikasi pemilik dana.");
+    const activities = node.metadata?.activity || ((node.metadata?.is_seed_wallet || node.metadata?.is_initial_wallet) ? state.graph.live_metadata?.activity : []) || [];
+    if (activities.length) {
+      const activity = el("details", "technical-details public-activity"); activity.open = true;
+      activity.append(el("summary", "", `${activities.length} signature aktivitas publik`), el("p", "scope-note", "Signature dapat memuat instruksi token atau instruksi lain yang tidak digambar sebagai transfer SOL native."));
+      for (const entry of activities.slice(0, 20)) {
+        const link = explorerLink("tx", entry.signature, `↗ ${short(entry.signature, 20)} · ${friendly(entry.status)}`, { chain: "SOLANA", explorer_url: entry.explorer_url });
+        if (link) activity.append(link);
+      }
+      inspector.append(activity);
+    }
   }
   if (node.node_zone === "ONCHAIN_WALLET" && node.address && state.graph.simulation !== false) {
     const expand = el("button", "button expand-button", "+ Expand hop on-chain berikutnya");
@@ -781,7 +935,7 @@ function applyGovernanceResult(result) {
   state.graph.confirmed_frozen_amount_idr = result.confirmed_frozen_amount_idr;
   if (result.evidence_packet) state.packets.set(request.request_id, result.evidence_packet);
   state.selectedRequestId = request.request_id;
-  renderMetrics(); renderGraph(); selectNode(request.target_node_id);
+  state.currentStep = 4; renderStepper(); renderCaseSummary(); renderMetrics(); renderGraph(); selectNode(request.target_node_id);
 }
 
 async function sendFreezeRequest(request) {
@@ -846,8 +1000,9 @@ function stopAnimation() {
   state.animation++;
   for (const group of document.querySelectorAll(".node,.edge-group")) group.classList.remove("dimmed", "active");
   $("#animation-step").hidden = true;
-  $("#animate-button").replaceChildren(el("span", "", "▷"), document.createTextNode("Animasi step-by-step"));
+  $("#animate-button").replaceChildren(el("span", "", "▷"), document.createTextNode("Animasi aliran dana"));
   $("#animate-button").dataset.running = "false";
+  $("#sidebar-animate-button").textContent = "▶ Putar Animasi Aliran Dana";
 }
 
 async function animate() {
@@ -855,9 +1010,10 @@ async function animate() {
   if ($("#animate-button").dataset.running === "true") { stopAnimation(); return; }
   const token = ++state.animation;
   const hops = new Map(state.graph.nodes.map((node) => [node.id, Number(node.hop || 0)]));
-  const edges = [...state.graph.edges].sort((a, b) => (hops.get(a.source) || 0) - (hops.get(b.source) || 0) || (new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()));
+  const edges = [...state.viewEdges].sort((a, b) => (hops.get(a.source) || 0) - (hops.get(b.source) || 0) || (new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()));
   if (!edges.length) { toast("Belum ada transfer untuk dianimasikan."); return; }
   $("#animate-button").dataset.running = "true";
+  $("#sidebar-animate-button").textContent = "Ⅱ Hentikan Animasi";
   $("#animate-button").replaceChildren(el("span", "", "Ⅱ"), document.createTextNode("Hentikan animasi"));
   for (const group of document.querySelectorAll(".node,.edge-group")) group.classList.add("dimmed");
   $("#animation-step").hidden = false;
@@ -911,7 +1067,10 @@ for (const mode of ["scenario", "live"]) {
   $(`#${mode}-tab`).addEventListener("click", () => setMode(mode));
   $(`#${mode}-tab`).addEventListener("keydown", (event) => { if (["ArrowLeft", "ArrowRight", "Home", "End"].includes(event.key)) { event.preventDefault(); const next = event.key === "Home" ? "scenario" : event.key === "End" ? "live" : mode === "scenario" ? "live" : "scenario"; setMode(next); $(`#${next}-tab`).focus(); } });
 }
-for (const button of document.querySelectorAll("[data-wallet]")) button.addEventListener("click", () => { $("#live-wallet").value = button.dataset.wallet; $("#live-wallet").focus(); });
+$("#live-chain").addEventListener("change", () => configureLiveChain());
+$("#live-preset-button").addEventListener("click", () => { configureLiveChain(); $("#live-wallet").focus(); });
+$("#live-wallet").addEventListener("input", () => $("#live-wallet").setCustomValidity(""));
+configureLiveChain(false);
 
 function apiLogCard(entry) {
   const card = el("article", "api-log-card");
@@ -982,13 +1141,26 @@ $("#zoom-in").addEventListener("click", () => zoom(1.2));
 $("#zoom-out").addEventListener("click", () => zoom(1 / 1.2));
 $("#fit-button").addEventListener("click", fitGraph);
 $("#animate-button").addEventListener("click", animate);
+$("#sidebar-animate-button").addEventListener("click", animate);
+$("#run-scenario-button").addEventListener("click", trace);
+for (const item of document.querySelectorAll(".investigation-stepper li")) {
+  item.tabIndex = 0; item.setAttribute("role", "button");
+  const focusStep = () => {
+    state.currentStep = Number(item.dataset.step); renderStepper();
+    if (state.currentStep === 1) { setMode("scenario"); $(".report-details").open = true; $("#report-form").scrollIntoView({ block: "center", behavior: "smooth" }); }
+    else if (state.currentStep === 2) openMirrorDb();
+    else $(state.currentStep === 3 ? ".graph-panel" : ".right-panel").scrollIntoView({ block: "center", behavior: "smooth" });
+  };
+  item.addEventListener("click", focusStep);
+  item.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); focusStep(); } });
+}
 $("#export-button").addEventListener("click", () => { if (state.graph) download(`${state.graph.iasc_ticket_id || state.graph.trace_id}-${state.graph.simulation === false ? "live-mainnet" : "bukti-governance-simulasi"}.json`, { ...state.graph, evidence_packets: Object.fromEntries(state.packets) }); });
 
 let graphResizeTimer;
 new ResizeObserver(() => {
   clearTimeout(graphResizeTimer);
   graphResizeTimer = setTimeout(() => {
-    if (!state.graph || Math.abs($("#graph-scroll").clientWidth - state.baseWidth) < 2) return;
+    if (!state.graph || Math.abs($("#graph-scroll").clientWidth - state.viewportWidth) < 2) return;
     stopAnimation();
     renderGraph();
     resetView();

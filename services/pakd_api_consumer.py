@@ -2,12 +2,13 @@
 import time
 from decimal import Decimal
 import httpx
+from services.chains import CHAIN_CONFIG, normalize_chain
 
 PAKD_CODES={'INDODAX':'Indodax','TOKOCRYPTO':'Tokocrypto','PINTU':'Pintu','REKU':'Reku','DEMO_P2P':'PAKD Demo P2P'}
 SOURCE='SYNTHETIC_PAKD_SCOPED_MIRROR_REST_API'
 FIELDS={
  'ojk_scoped_fiat_inflows':('pakd_code','inflow_id','va_or_account_number','rrn_reference','amount_idr','inflow_timestamp','intake_channel','user_uid','kyc_nik_masked','kyc_name_masked','remaining_fiat_balance_idr'),
- 'ojk_scoped_crypto_withdrawals':('withdrawal_id','pakd_code','user_uid','linked_inflow_id','token_symbol','crypto_amount','source_chain','source_chain_id','withdrawal_tx_hash','initial_wallet_address','withdrawal_timestamp','remaining_crypto_balance'),
+ 'ojk_scoped_crypto_withdrawals':('withdrawal_id','pakd_code','user_uid','linked_inflow_id','token_symbol','crypto_amount','source_chain','source_chain_id','withdrawal_tx_hash','initial_wallet_address','withdrawal_timestamp','remaining_crypto_balance','chain','chain_family','scanner_provider','fiat_value_idr'),
  'ojk_scoped_wallet_registry':('wallet_address','chain','chain_id','pakd_code','user_uid','kyc_nik_masked','wallet_role','p2p_offramp_pujk_name','p2p_offramp_account_number')}
 EXCLUDED=('password_hash','api_secret','internal_orderbook','cold_wallet_private_key','device_imei','fee_tier','private_key')
 ALIASES={'ETHEREUM_ERC20':'ETHEREUM','BSC_BEP20':'BSC','TRON_TRC20':'TRON'}
@@ -33,8 +34,11 @@ def _safe_payload(payload):
     if 'inflow' in payload:
         result['inflow']=_record('ojk_scoped_fiat_inflows',payload['inflow'])
         rows=payload.get('withdrawals',[])
-        if not isinstance(rows,list) or len(rows)>3:raise PAKDAPIError('Batas scoped withdrawals tidak valid')
+        if not isinstance(rows,list) or len(rows)>16:raise PAKDAPIError('Batas scoped withdrawals tidak valid')
         result['withdrawals']=[_record('ojk_scoped_crypto_withdrawals',row) for row in rows]
+        result['chains_used']=list(dict.fromkeys(row['chain'] for row in result['withdrawals']))
+        if payload.get('chains_used') != result['chains_used']:
+            raise PAKDAPIError('Daftar chain tidak sesuai withdrawal scoped')
     if 'wallet' in payload:result['wallet']=_record('ojk_scoped_wallet_registry',payload['wallet'])
     if 'tables' in payload:
         if not isinstance(payload['tables'],dict):raise PAKDAPIError('Scoped schema tidak valid')
@@ -104,30 +108,44 @@ class PAKDAPIConsumer:
             if not inflow:continue
             if inflow['va_or_account_number'] != va_number or inflow['rrn_reference'] != rrn_reference or Decimal(inflow['amount_idr']) != Decimal(str(amount_idr)):
                 raise PAKDAPIError('Respons inflow tidak sesuai request')
-            if inflow['pakd_code']!=code or len(withdrawals)>1:
-                raise PAKDAPIError('Pemetaan PAKD inflow/withdrawal ambigu atau lintas institusi')
-            withdrawal=withdrawals[0] if withdrawals else {}
-            if withdrawal and (withdrawal['pakd_code']!=code or withdrawal['user_uid']!=inflow['user_uid'] or withdrawal['linked_inflow_id']!=inflow['inflow_id']):
-                raise PAKDAPIError('Withdrawal tidak terikat pada inflow dan UID yang sama')
-            matches.append({**inflow,**withdrawal,'pakd_name':PAKD_CODES[code],'deposit_id':inflow['inflow_id'],
+            if inflow['pakd_code']!=code or len({row['withdrawal_id'] for row in withdrawals}) != len(withdrawals):
+                raise PAKDAPIError('Pemetaan PAKD atau ID withdrawal tidak valid')
+            fiat_total=Decimal(0)
+            families={'BTC':'BITCOIN','SOLANA':'SOLANA','TRON':'TRON'}
+            for withdrawal in withdrawals:
+                if withdrawal['pakd_code']!=code or withdrawal['user_uid']!=inflow['user_uid'] or withdrawal['linked_inflow_id']!=inflow['inflow_id']:
+                    raise PAKDAPIError('Withdrawal tidak terikat pada inflow dan UID yang sama')
+                if (withdrawal['chain'] not in CHAIN_CONFIG or withdrawal['chain']!=withdrawal['source_chain']
+                    or withdrawal['chain_family'] != families.get(withdrawal['chain'],'EVM')
+                    or withdrawal['source_chain_id'] != CHAIN_CONFIG[withdrawal['chain']]['chain_id']):
+                    raise PAKDAPIError('Chain/family withdrawal scoped tidak konsisten')
+                try:
+                    fiat,crypto=Decimal(withdrawal['fiat_value_idr']),Decimal(withdrawal['crypto_amount'])
+                    if not fiat.is_finite() or not crypto.is_finite() or fiat<0 or crypto<=0:raise ValueError()
+                except (ValueError,ArithmeticError):raise PAKDAPIError('Nominal withdrawal scoped tidak valid') from None
+                fiat_total+=fiat
+            if fiat_total>Decimal(inflow['amount_idr']):raise PAKDAPIError('Total withdrawal melebihi inflow Rupiah')
+            single=withdrawals[0] if len(withdrawals)==1 else {}
+            matches.append({**inflow,**single,'pakd_name':PAKD_CODES[code],'deposit_id':inflow['inflow_id'],
                 'deposit_timestamp':inflow['inflow_timestamp'],'intake_type':inflow['intake_channel'],'nik_masked':inflow['kyc_nik_masked'],
                 'full_name':inflow['kyc_name_masked'],'remaining_pakd_balance_idr':inflow['remaining_fiat_balance_idr'],
-                'chain':withdrawal.get('source_chain'),'withdrawal_tx_hash':withdrawal.get('withdrawal_tx_hash'),
-                'initial_wallet_address':withdrawal.get('initial_wallet_address'),'evidence_source':SOURCE,'simulation':True,
-                'scoped_inflow':inflow,'scoped_withdrawal':withdrawal,'api_endpoint':'/api/v1/pakd-mirror-api/'+code+'/inflow-lookup'})
+                'chain':single.get('source_chain'),'withdrawal_tx_hash':single.get('withdrawal_tx_hash'),
+                'initial_wallet_address':single.get('initial_wallet_address'),'evidence_source':SOURCE,'simulation':True,
+                'chains_used':result['chains_used'],'withdrawals':withdrawals,
+                'scoped_inflow':inflow,'scoped_withdrawal':single,'api_endpoint':'/api/v1/pakd-mirror-api/'+code+'/inflow-lookup'})
         if len(matches)>1:raise PAKDAPIError('Pencocokan inflow lintas PAKD ambigu; review manual diperlukan')
         return matches[0] if matches else None
 
     async def consume_pakd_wallet_reverse_lookup_api(self,wallet_address,chain='ETHEREUM',pakd_code=None):
-        chain=ALIASES.get(chain,chain)
-        key=(wallet_address if chain=='TRON' else wallet_address.lower(),chain,pakd_code)
+        chain=normalize_chain(chain)
+        key=(wallet_address if chain in {'TRON','BTC','SOLANA'} else wallet_address.lower(),chain,pakd_code)
         if key in self._wallet_cache:return self._wallet_cache[key]
         matches=[]
         for code in self._codes(pakd_code):
             result=await self._request(code,'wallet-lookup',{'wallet_address':wallet_address,'chain':chain})
             wallet=result.get('wallet')
             if wallet:
-                if wallet['pakd_code']!=code or wallet['chain']!=chain or (wallet['wallet_address'] if chain=='TRON' else wallet['wallet_address'].lower()) != key[0]:
+                if wallet['pakd_code']!=code or wallet['chain']!=chain or (wallet['wallet_address'] if chain in {'TRON','BTC','SOLANA'} else wallet['wallet_address'].lower()) != key[0]:
                     raise PAKDAPIError('Scoped wallet memiliki konteks PAKD/chain tidak sesuai')
                 matches.append({**wallet,'pakd_name':PAKD_CODES[code],'nik_masked':wallet['kyc_nik_masked'],'wallet_type':wallet['wallet_role'],
                     'evidence_source':SOURCE,'simulation':True,'scoped_wallet':wallet,'identity_note':'Kecocokan API dengan identitas sintetis; bukan KYC pemilik live terverifikasi.'})
@@ -137,10 +155,18 @@ class PAKDAPIConsumer:
         return found
 
     async def consume_pakd_p2p_lookup_api(self,wallet_address,chain,pakd_code=None):
+        chain=normalize_chain(chain)
         matches=[]
         for code in self._codes(pakd_code):
             response=await self._request(code,'p2p-lookup',{'wallet_address':wallet_address,'chain':ALIASES.get(chain,chain)})
-            if response.get('wallet'):matches.append(response['wallet'])
+            wallet=response.get('wallet')
+            if wallet:
+                returned_address=wallet['wallet_address'] if chain in {'TRON','BTC','SOLANA'} else wallet['wallet_address'].lower()
+                expected_address=wallet_address if chain in {'TRON','BTC','SOLANA'} else wallet_address.lower()
+                if (wallet['pakd_code']!=code or wallet['chain']!=chain or returned_address!=expected_address
+                    or wallet['wallet_role']!='CUSTODIAL_DEPOSIT_ADDRESS' or not wallet['p2p_offramp_account_number']):
+                    raise PAKDAPIError('Scoped P2P memiliki konteks wallet/PAKD tidak sesuai')
+                matches.append(wallet)
         if len(matches)>1:raise PAKDAPIError('P2P off-ramp lintas PAKD ambigu')
         return matches[0] if matches else None
 

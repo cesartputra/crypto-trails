@@ -206,7 +206,84 @@ def fixtures():
             bridge_tx,chain_tx(f"bridge-{index}-after","landing","w1","7500",210,chain=destination),
             chain_tx(f"bridge-{index}-loopback","w1","deposit","7500",260,chain=destination)]
         bridge_presets.append(scenario)
-    return {s["id"]: s for s in (s1, s2, s3, s4, *bridge_presets)}
+    dispersal = multichain_dispersal_fixture()
+    all_scenarios = (dispersal, s1, s2, s3, s4, *bridge_presets)
+    for scenario in all_scenarios:
+        if "chain_dispersals" not in scenario:
+            ramp = scenario["onramp"]
+            chain = {"ETHEREUM_ERC20":"ETHEREUM", "BSC_BEP20":"BSC", "TRON_TRC20":"TRON"}.get(ramp["chain"], ramp["chain"])
+            initial = next(w for w in scenario["wallets"] if w["id"] == ramp["initial_wallet"])
+            scenario["chain_dispersals"] = [{"withdrawal_id": "WD-"+scenario["id"], "chain":chain,
+                "chain_family":"TRON" if chain=="TRON" else "EVM", "scanner_provider":"TRON_SCENARIO" if chain=="TRON" else "ETHERSCAN_V2",
+                "token_symbol":ramp["asset"], "crypto_amount":ramp["crypto_amount"],
+                "fiat_value_idr":str(D(ramp["crypto_amount"])*RATE),"initial_wallet_address":initial["address"],
+                "withdrawal_tx_hash":ramp["withdrawal_tx_hash"],"withdrawal_timestamp":ramp["withdrawal_timestamp"],
+                "initial_node_id":initial["id"],"endpoint_node_id":None,"endpoint_status":"TRACED_SCENARIO"}]
+    return {scenario["id"]: scenario for scenario in all_scenarios}
+
+
+def _base58(data):
+    alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+    number = int.from_bytes(data,"big"); encoded = ""
+    while number:
+        number, remainder = divmod(number,58); encoded = alphabet[remainder]+encoded
+    return "1"*(len(data)-len(data.lstrip(b"\0")))+encoded
+
+
+def _demo_btc_address(label):
+    payload = b"\0"+bytes.fromhex(sha256(label.encode()).hexdigest())[:20]
+    checksum = bytes.fromhex(sha256(bytes.fromhex(sha256(payload).hexdigest())).hexdigest())[:4]
+    return _base58(payload+checksum)
+
+
+def multichain_dispersal_fixture():
+    case_id = "multichain-dispersal"
+    a = [account("victim","Korban · BNI","BNI","012345670010","VICTIM"),
+         account("mule1","Penampung · BCA","BCA","0881122340"),
+         account("va","VA Tokocrypto","Permata","880800018000","PAKD_VA",platform="Tokocrypto"),
+         account("final-sol-bank","Pencairan SOL · BRI","BRI","034101009988222","FINAL_CASHOUT",available_balance_idr="45000000")]
+    h = handoff_seed(case_id,"BNI","180000000",a[0]["account"],a[1]["account"])
+    h.update(last_fna_pujk_name="BCA",last_fna_account_number=a[1]["account"],pakd_gateway_va_or_account=a[2]["account"],
+        fiat_transfer_timestamp=stamp(40),rrn_reference_number="RRN-DISPERSAL-001")
+    solhop = _base58(bytes.fromhex(sha256(b"demo-sol-hop").hexdigest()))
+    soldeposit = _base58(bytes.fromhex(sha256(b"demo-sol-pintu").hexdigest()))
+    branches = [
+        {"withdrawal_id":"WD-DISP-BTC","chain":"BTC","chain_family":"BITCOIN","scanner_provider":"MEMPOOL_SPACE", "token_symbol":"BTC",
+         "crypto_amount":"0.065","fiat_value_idr":"70000000","initial_wallet_address":"bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh", "initial_node_id":"btc-initial","endpoint_node_id":"btc-deposit","endpoint_status":"LOOPBACK_PAKD_INDODAX"},
+        {"withdrawal_id":"WD-DISP-SOL","chain":"SOLANA","chain_family":"SOLANA","scanner_provider":"SOLANA_MAINNET_RPC", "token_symbol":"SOL",
+         "crypto_amount":"185","fiat_value_idr":"50000000","initial_wallet_address":"5eykt4UsFv8P8NJdTREpY1vzqKqZKvdpKuc147dw2N9d", "initial_node_id":"sol-initial","endpoint_node_id":"final-sol-bank","endpoint_status":"P2P_OFFRAMP_BRI"},
+        {"withdrawal_id":"WD-DISP-ETH","chain":"ETHEREUM","chain_family":"EVM","scanner_provider":"ETHERSCAN_V2", "token_symbol":"USDT",
+         "crypto_amount":"3750","fiat_value_idr":"60000000","initial_wallet_address":"0x71C0000000000000000000000000000000000010", "initial_node_id":"eth-initial","endpoint_node_id":"eth-cold","endpoint_status":"ISSUER_REVIEW_REQUIRED"}]
+    for index, branch in enumerate(branches):
+        branch["withdrawal_timestamp"] = stamp(120+index)
+        digest = bytes.fromhex(sha256(branch["withdrawal_id"].encode()).hexdigest())
+        branch["withdrawal_tx_hash"] = _base58(digest+digest) if branch["chain"]=="SOLANA" else ("0x" if branch["chain"]=="ETHEREUM" else "")+digest.hex()
+    wallets = [
+        wallet("btc-initial",branches[0]["initial_wallet_address"],"BTC awal",chain="BTC",asset="BTC"),
+        wallet("btc-hop",_demo_btc_address("demo-btc-hop"),"Perantara BTC",chain="BTC",asset="BTC"),
+        wallet("btc-deposit",_demo_btc_address("demo-indodax-btc"),"Deposit Indodax","DIRECT_EXCHANGE_DEPOSIT",balance="0.065",chain="BTC",asset="BTC",platform="Indodax",uid="IDX-DISP-BTC",recovery_institution="PAKD",kyc_nik_masked="3273********0010"),
+        wallet("sol-initial",branches[1]["initial_wallet_address"],"SOL awal",chain="SOLANA",asset="SOL"),
+        wallet("sol-hop",solhop,"Perantara SOL",chain="SOLANA",asset="SOL"),
+        wallet("sol-deposit",soldeposit,"Deposit Pintu","DIRECT_EXCHANGE_DEPOSIT",balance="0",chain="SOLANA",asset="SOL",platform="Pintu",uid="PTU-DISP-SOL",recovery_institution="PAKD",kyc_nik_masked="3273********0011"),
+        wallet("eth-initial",branches[2]["initial_wallet_address"],"USDT awal",chain="ETHEREUM",asset="USDT"),
+        wallet("eth-cold","0x99A0000000000000000000000000000000000010","Unhosted USDT",balance="3750",chain="ETHEREUM",asset="USDT",recovery_institution="ISSUER")]
+    ledger=[]
+    for branch, route in [(branches[0],["btc-initial","btc-hop","btc-deposit"]),(branches[1],["sol-initial","sol-hop","sol-deposit"]),(branches[2],["eth-initial","eth-cold"])]:
+        for index,(source,target) in enumerate(zip(route,route[1:])):
+            key=branch["withdrawal_id"]+f"-hop-{index}"
+            digest=bytes.fromhex(sha256(key.encode()).hexdigest())
+            ledger.append({"id":key,"source":source,"target":target,"chain":branch["chain"],"asset":branch["token_symbol"],"crypto_amount":branch["crypto_amount"],
+                "timestamp":stamp(150+index*60),"tx_hash":_base58(digest+digest) if branch["chain"]=="SOLANA" else ("0x" if branch["chain"]=="ETHEREUM" else "")+digest.hex(),"chain_branch":branch["chain"]})
+    ramp = {"kind":"VA","bank_target":"va","uid":"TKC-DISP-001","platform":"Tokocrypto","initial_wallet":"eth-initial", "crypto_amount":"3750", "fiat_amount_idr":"180000000", "chain":"ETHEREUM", "asset":"USDT",
+        "withdrawal_timestamp":branches[2]["withdrawal_timestamp"],"withdrawal_tx_hash":branches[2]["withdrawal_tx_hash"],"kyc":{"name":"Nasabah Demo Dispersal","nik_masked":"3174********0010","status":"SYNTHETIC_VERIFIED"}}
+    return {"id":case_id,"title":"Sebaran Multi-Chain: BTC, Solana & Ethereum","description":"Rp180 juta dari Tokocrypto tersebar ke BTC Rp70 juta, SOL Rp50 juta dan USDT Ethereum Rp60 juta.",
+        "multi_chain_dispersal":True,
+        "dispersal_offramp":{"deposit_node_id":"sol-deposit","final_bank_node":"final-sol-bank","crypto_amount":"185","fiat_amount_idr":"50000000", "order_id":"P2P-DISP-SOL-001", "sell_timestamp":stamp(260),"settlement_timestamp":stamp(300),"settlement_reference":"BRI-DISP-SYNTH-001"},
+        "handoff":h,"accounts":a,"onramp":ramp,"chain_dispersals":branches,"wallets":wallets,"chain_ledger":ledger,"p2p_orders":[],"probability":"86",
+        "fna_snapshot":{"fna_trail_id":h["fna_trail_id"],"nodes":a[:3],"edges":[bank_tx("disp-bank-1","victim","mule1","180000000",0),bank_tx("disp-bank-2","mule1","va","180000000",40)],"source":"SYNTHETIC_FNA_HANDOFF_SNAPSHOT","bank_traversal_performed_here":False},
+        "pakd_intake_ledger":[{"intake_id":"PAKD-IN-DISP-001","rrn_reference_number":h["rrn_reference_number"],"gateway_account":h["pakd_gateway_va_or_account"],"fiat_amount_idr":"180000000","timestamp":stamp(40),"pakd_name":"Tokocrypto","pakd_user_uid":ramp["uid"],"intake_mechanism":"DIRECT_VA_DEPOSIT"}]}
+
+
 
 SCENARIOS = fixtures()
 

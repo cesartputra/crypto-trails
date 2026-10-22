@@ -2,7 +2,7 @@
 from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 Money = Decimal
 DecisionStatus = Literal["NOT_SENT", "SENT_WAITING_DECISION", "APPROVED_FREEZE_BY_INSTITUTION", "PARTIAL_FREEZE_BY_INSTITUTION", "REJECTED_BY_INSTITUTION"]
@@ -39,7 +39,7 @@ class PAKDInternalTrailRecord(BaseModel):
     pakd_user_uid: str
     kyc_nik_masked: str = Field(pattern=r"^[0-9]{4}\*{8}[0-9]{4}$")
     fiat_in_idr: Money = Field(ge=0)
-    crypto_purchased_token: Literal["USDT", "USDC", "BTC", "ETH"]
+    crypto_purchased_token: Literal["USDT", "USDC", "BTC", "ETH", "SOL"]
     crypto_purchased_amount: Decimal = Field(ge=0)
     remaining_pakd_balance_idr: Money = Field(ge=0)
     withdrawal_status: Literal["STILL_IN_PAKD_WALLET", "WITHDRAWN_ONCHAIN", "SOLD_VIA_P2P_OFFRAMP"]
@@ -78,6 +78,9 @@ class TrailNode(BaseModel):
     bridged_from_chain: str | None = None
     bridged_to_chain: str | None = None
     explorer_url: str = ""
+    chain_family: str | None = None
+    scanner_provider: str | None = None
+    chain_branch: str | None = None
     address: str | None = None
     account: str | None = None
     taint_score_pct: Decimal | None = Field(default=None, ge=0, le=100)
@@ -103,6 +106,9 @@ class TrailEdge(BaseModel):
     bridged_from_chain: str | None = None
     bridged_to_chain: str | None = None
     explorer_url: str = ""
+    chain_family: str | None = None
+    scanner_provider: str | None = None
+    chain_branch: str | None = None
     tx_hash: str | None = None
     timestamp: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -131,6 +137,22 @@ class PAKDAPICallLog(BaseModel):
     pakd_code: str = ""
     transport_mode: str = "IN_PROCESS_ASGI_HTTP_DEMO"
 
+class ChainDispersal(BaseModel):
+    model_config = ConfigDict(allow_inf_nan=False)
+    withdrawal_id: str
+    chain: str
+    chain_family: str
+    scanner_provider: str
+    token_symbol: str
+    crypto_amount: Decimal = Field(ge=0)
+    fiat_value_idr: Money = Field(ge=0)
+    initial_wallet_address: str
+    withdrawal_tx_hash: str
+    withdrawal_timestamp: datetime
+    initial_node_id: str | None = None
+    endpoint_node_id: str | None = None
+    endpoint_status: str = "TRACED"
+
 class CrossRailGraphResponse(BaseModel):
     trace_id: str
     iasc_ticket_id: str
@@ -154,17 +176,33 @@ class CrossRailGraphResponse(BaseModel):
     warnings: list[str] = Field(default_factory=list)
     live_metadata: dict[str, Any] = Field(default_factory=dict)
     pakd_api_exchange_logs: list[PAKDAPICallLog] = Field(default_factory=list)
+    chains_used: list[str] = Field(default_factory=list)
+    chain_dispersals: list[ChainDispersal] = Field(default_factory=list)
 
 class LiveWalletTrailInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    wallet_address: str = Field(pattern=r"^0x[a-fA-F0-9]{40}$")
+    wallet_address: str = Field(min_length=20, max_length=100)
     etherscan_api_key: str | None = Field(default=None, max_length=256, repr=False)
     max_hops: int = Field(default=2, ge=1, le=2, strict=True)
-    token_filter: Literal["ALL", "ETH", "USDT", "USDC"] = "ALL"
+    token_filter: Literal["ALL", "ETH", "USDT", "USDC", "BTC", "SOL"] = "ALL"
     direction: Literal["OUTBOUND", "BOTH"] = "OUTBOUND"
     simulate_fna_and_mirror_origin: bool = False
-    source_chain: Literal["ETHEREUM", "BSC", "POLYGON", "ARBITRUM", "OPTIMISM", "BASE"] = "ETHEREUM"
+    source_chain: Literal["BTC", "SOLANA", "ETHEREUM", "BSC", "POLYGON", "ARBITRUM", "OPTIMISM", "BASE"] = "ETHEREUM"
     auto_scan_cross_chain: bool = False
+
+    @model_validator(mode="after")
+    def address_matches_chain(self):
+        from services.chains import is_valid_address
+        if not is_valid_address(self.source_chain, self.wallet_address):
+            raise ValueError("Alamat wallet tidak valid untuk chain yang dipilih")
+        if self.source_chain == "BTC" and self.wallet_address.lower().startswith("bc1"):
+            self.wallet_address = self.wallet_address.lower()
+        allowed = {"BTC": {"ALL", "ETH", "BTC"}, "SOLANA": {"ALL", "ETH", "SOL"}}
+        if self.source_chain in allowed and self.token_filter not in allowed[self.source_chain]:
+            raise ValueError("Filter aset tidak sesuai scanner native yang dipilih")
+        if self.source_chain not in allowed and self.token_filter in {"BTC", "SOL"}:
+            raise ValueError("Aset BTC/SOL tidak didukung scanner EVM")
+        return self
 
     @field_validator("etherscan_api_key")
     @classmethod

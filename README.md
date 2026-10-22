@@ -1,32 +1,12 @@
-# OJK IASC Crypto-Trails · Scoped PAKD API & Multichain PoC
+# Crypto-Trails · PAKD Multi-Chain Dispersal & Dedicated Scanners
 
-Aplikasi lokal untuk **FNA’s Money Trails → API di atas Scoped Mirror DB milik PAKD → Multichain & Bridge Trailing → keputusan PUJK/PAKD**. Snapshot FNA, identitas dan data PAKD serta callback freeze adalah simulasi. Mode live membaca transaksi publik asli; ini bukan aplikasi resmi atau konektor operasional OJK/IASC.
+Dashboard investigasi **FNA → PAKD Scoped Mirror REST API → Bitcoin / Solana / EVM Scanner → rekomendasi dan keputusan institusi**. Satu inflow Rupiah dapat terhubung ke beberapa withdrawal pada chain berbeda. UI menampilkan narasi singkat, kartu sebaran dan jalur per chain agar pembagian dana mudah dibaca.
 
-## Arsitektur
-
-```mermaid
-flowchart LR
-  F[FNA Money Trails / PUJK] -->|VA + RRN + nominal| C[Crypto-Trails OJK: API Consumer]
-  subgraph PAKD[Domain masing-masing PAKD]
-    D[Database utama] -->|Replikasi field yang diizinkan| M[Scoped Mirror DB]
-    M --> A[Standar PAKD Mirror REST API]
-  end
-  C -->|HTTP lookup inflow / wallet / P2P| A
-  A -->|Respons scoped + UID + initial wallet| C
-  C --> E[Etherscan V2 / explorer publik per chain]
-  E --> B[Deteksi bridge + scan chain tujuan]
-  B --> R[Reverse lookup API PAKD pada chain tujuan]
-  R --> T[Tiket rekomendasi IASC]
-  T --> I[PUJK / PAKD / issuer memutuskan]
-```
-
-**Crypto-Trails tidak membuka koneksi SQL ke database PAKD.** SQL hanya berada pada modul provider yang mensimulasikan domain PAKD. Consumer memakai `httpx` dan HTTP REST, termasuk serialisasi payload, validasi DTO, status HTTP, serta pencatatan latency. Untuk demo lokal, HTTP memakai `ASGITransport` ke aplikasi provider terpisah dalam satu proses; bukan koneksi jaringan ke server PAKD sungguhan. Router provider juga dipublikasikan pada aplikasi utama agar alur API-to-API terlihat di referensi OpenAPI lokal.
-
-Prinsip minimisasi data diwujudkan melalui allowlist kolom dan respons terstruktur. Ini adalah desain teknis, bukan sertifikasi kepatuhan UU PDP atau bukti bahwa OJK/PAKD telah mengaktifkan replikasi produksi.
+PoC lokal ini bukan sistem resmi OJK/IASC. Handoff FNA, identitas nasabah PAKD, saldo serta keputusan freeze pada skenario adalah sintetis. Mode live membaca API publik asli dan tidak menyisipkan graph demo ketika provider gagal.
 
 ## Menjalankan
 
-Python 3.11+; diuji pada Python 3.12 macOS ARM64. Tanpa Docker, CDN, Node.js atau database server.
+Python 3.11+; diuji pada Python 3.12 macOS ARM64. Tidak perlu Docker, database server, CDN atau framework JavaScript. SQLite dan validasi encoding memakai standard library; dependensi Python tetap sama.
 
 ```bash
 git clone https://github.com/cesartputra/crypto-trails.git
@@ -38,17 +18,91 @@ python -m pip install -r requirements-dev.txt \
   && python -m uvicorn main:app --host 127.0.0.1 --port 8000
 ```
 
-Pada Mac demo yang sudah disiapkan, gunakan `source .venv-offline/bin/activate`. Lingkungan ini hanya lokal dan bergantung pada runtime pembuatnya; tidak disertakan Git/ZIP. Tidak ada dependensi baru untuk refactor ini. Instalasi awal tetap memerlukan akses PyPI. Error koneksi indeks paket tidak diperbaiki dengan mematikan verifikasi TLS.
+Pada Mac demo yang sudah disiapkan, aktifkan `source .venv-offline/bin/activate` sebelum menjalankan server. Lingkungan offline hanya lokal dan bergantung pada runtime pembuatnya; tidak disertakan Git/ZIP. `bash start.command` adalah launcher runtime sederhana; Ctrl+C menghentikan server.
 
-Buka [dashboard](http://127.0.0.1:8000/), [referensi API lokal](http://127.0.0.1:8000/docs), atau [OpenAPI](http://127.0.0.1:8000/openapi.json). `bash start.command` menyediakan launcher runtime loopback; Ctrl+C menghentikan server. Setelah mengganti source atau konfigurasi, restart server sebelum me-refresh browser.
+Buka [dashboard](http://127.0.0.1:8000/), [referensi API lokal](http://127.0.0.1:8000/docs), atau [kontrak OpenAPI](http://127.0.0.1:8000/openapi.json). Restart server setelah mengganti source, kemudian refresh browser. Instalasi awal memerlukan akses PyPI; jangan menonaktifkan verifikasi TLS untuk mengatasi kegagalan jaringan.
 
-## Light dan Dark mode
+## Arsitektur dan minimisasi data
 
-Tombol tema di header memilih Light/Dark. Pilihan disimpan di localStorage browser; pada kunjungan pertama mengikuti preferensi sistem. Tema tidak menyimpan API key atau data perkara.
+```mermaid
+flowchart LR
+  F[FNA Money Trails / PUJK] -->|VA + RRN + IDR| C[Crypto-Trails API Consumer]
+  subgraph P[Domain PAKD]
+    M[Scoped Mirror DB] --> A[PAKD Mirror REST API]
+  end
+  C -->|HTTP inflow lookup| A
+  A -->|chains_used + withdrawals| D[Sebaran multi-chain]
+  D --> B[BTC · Mempool / Blockstream]
+  D --> S[Solana · Mainnet JSON-RPC]
+  D --> E[EVM · Etherscan V2 / explorer per chain]
+  B --> R[Reverse lookup API PAKD]
+  S --> R
+  E --> R
+  R --> T[Tiket rekomendasi IASC]
+  T --> I[PUJK / PAKD / issuer memutuskan]
+```
 
-## `.env` dan provider explorer
+Aplikasi OJK bertindak sebagai **API consumer**, tanpa membuka koneksi SQL ke database PAKD. SQL hanya berada dalam `pakd_scoped_mirror_provider.py`. Demo menggunakan HTTP ASGI dalam satu proses untuk memisahkan provider/consumer; bukan koneksi ke server produksi PAKD. Endpoint provider tetap terlihat pada OpenAPI.
 
-Salin `.env.example` ke `.env` bila belum ada, kemudian isi key secara lokal:
+Tiga tabel scoped: `ojk_scoped_fiat_inflows`, `ojk_scoped_crypto_withdrawals`, dan `ojk_scoped_wallet_registry`. Withdrawal terikat pada `pakd_code`, `user_uid`, dan `linked_inflow_id`; satu inflow boleh memiliki beberapa withdrawal yang sah. Respons inflow API memuat `chains_used` dan daftar `withdrawals`, termasuk:
+
+- ID withdrawal, chain/family dan scanner_provider.
+- Token, jumlah Decimal dan `fiat_value_idr` pada snapshot demo.
+- Hash withdrawal, initial address dan timestamp.
+
+BTC/SOL tidak dihitung dengan kurs USDT Rp16.000. Setiap cabang memakai nilai fiat yang teratribusi pada withdrawal tersebut; volume transfer berulang antar-hop tidak dijumlahkan sebagai kerugian baru.
+
+Allowlist respons menolak/menghapus field internal yang tidak termasuk scope. Nama kolom seperti `password_hash`, `api_secret`, `internal_orderbook`, `cold_wallet_private_key`, `device_imei`, dan `fee_tier` hanya ditampilkan dalam daftar pengecualian; nilainya tidak diakses atau disinkronkan. NIK dan nama nasabah disamarkan. Desain minimisasi ini bukan sertifikasi kepatuhan UU PDP.
+
+Log API bersifat per trace: endpoint, request, status HTTP, latency, scoped fields dan respons. Semua detail teknis tersedia melalui modal **Log API & Mirror DB PAKD**, bukan memenuhi layar investigasi utama.
+
+## Alur UI
+
+1. **Handoff FNA:** pilih kasus. Detail rekening, RRN, VA dan waktu disimpan pada form opsional yang dapat dibuka.
+2. **Cek PAKD Mirror API:** ringkasan menjelaskan nilai inflow dan sebaran chain dalam bahasa sederhana.
+3. **Pelacakan scanner:** kartu BTC/Solana/EVM menunjukkan jumlah, initial address dan sumber scanner. Klik kartu/filter untuk fokus pada jalur terkait; pilih Semua Chain untuk melihat fan-out lengkap.
+4. **Rekomendasi dan keputusan:** klik node untuk bukti dan kewenangan institusi. Pengiriman rekomendasi tidak langsung mengakui dana dibekukan.
+
+Kanvas memakai swimlane horizontal per chain, dengan konteks FNA/PAKD bersama di sisi kiri. Bukti dan API JSON dipisahkan dari ringkasan. Tema Light/Dark di header disimpan dalam localStorage; kunjungan pertama mengikuti preferensi sistem. API key tidak disimpan di localStorage.
+
+## Kasus default: Rp180 juta tersebar ke tiga chain
+
+**BNI → mule BCA → VA Tokocrypto → tiga withdrawal:**
+
+| Cabang | Nilai awal demo | Jalur akhir |
+| --- | --- | --- |
+| Bitcoin | Rp70 juta · 0,065 BTC | Initial BTC → wallet perantara → deposit BTC Indodax |
+| Solana | Rp50 juta · 185 SOL | Initial SOL → deposit Pintu → P2P off-ramp ke rekening BRI; saldo akhir eligible Rp45 juta |
+| Ethereum | Rp60 juta · 3.750 USDT | Initial ERC-20 wallet → unhosted wallet; draft permohonan review issuer |
+
+Nilai awal cabang berjumlah Rp180 juta. Potensi terminal pada snapshot Rp175 juta: Rp70 juta di PAKD, Rp45 juta saldo BRI dan Rp60 juta exposure USDT. Tidak ada nominal dikonfirmasi sampai callback keputusan simulasi; tidak ada jaminan recovery.
+
+Alamat, hash, identitas dan hubungan PAKD pada preset adalah sintetis, meskipun sebagian contoh alamat memakai format/alamat publik nyata. Jangan memakai mapping fixture sebagai bukti kepemilikan nasabah nyata. Enam preset sebelumnya juga dipertahankan: P2P full-cycle, direct VA/loopback, DEX/cold wallet, golden period serta dua bridge EVM Ethereum→Arbitrum/BSC. Semua memakai struktur `chain_dispersals` dan provenance scanner.
+
+## Live Scanner: BTC, Solana, EVM
+
+Pilih chain dan alamat yang sesuai, lalu jalankan live scanner. Contoh Solana berupa akun publik Wrapped SOL, bukan klaim identitas pengguna. Scanner berbeda digunakan sesuai keluarga chain:
+
+| Family | Provider | Bukti explorer |
+| --- | --- | --- |
+| Bitcoin | Mempool.space REST; fallback Blockstream Esplora jika provider utama gagal | mempool.space/address/... dan /tx/... |
+| Solana | api.mainnet-beta.solana.com JSON-RPC | solscan.io/account/... dan /tx/... |
+| EVM | Etherscan V2 `chainid` sesuai jaringan; fallback allowlist per chain tanpa key | Etherscan, BscScan, Arbiscan, PolygonScan, BaseScan, Optimism explorer |
+| TRON | Fixture TRC-20 sintetis saja | Tidak ada live TRON scanner |
+
+**Bitcoin:** riwayat address memakai `/address/{address}/txs`. Bitcoin adalah UTXO: satu transaksi dapat memiliki banyak input, output dan change. Graph menampilkan transaksi dan outputnya tanpa mengklaim bahwa setiap output milik pelaku. Jumlah output bukan nominal dana laporan atau saldo recovery. Alamat dan hash divalidasi, termasuk checksum address.
+
+**Solana:** `getSignaturesForAddress` dan `getBalance` mengambil aktivitas serta saldo native. `getTransaction` dengan `jsonParsed` mengurai transfer native SOL System Program. Signature hanya membuktikan akun direferensikan oleh transaksi; bukan otomatis transfer keluar. Transaksi gagal tidak dipakai sebagai transfer. Aktivitas yang belum dapat diurai tetap ditampilkan sebagai daftar signature dengan link, tanpa membuat edge palsu. SPL-token tracing lengkap bukan bagian scanner native ini.
+
+**EVM:** mengambil `txlist`, `tokentx`, dan saldo native. Filter USDT/USDC mengikat kontrak kanonis per chain. `ETH` pada filter berarti native coin jaringan (ETH, BNB, POL). Key Etherscan berlaku sesuai akses/kuota akun. BSC memerlukan key karena tidak ada fallback BSC yang diasumsikan. Fallback Ethereum tidak digunakan sebagai pengganti jaringan lain.
+
+Live dibatasi halaman terbaru, hop, request, node, edge dan deadline; ini bukan seluruh riwayat dan belum memiliki filter tanggal awal/akhir. Metadata menginformasikan provider, waktu pengambilan, batas dan aktivitas yang tidak didukung. Data live tidak menghasilkan skor taint, nilai IDR, recovery atau freeze otomatis.
+
+UI/API menerima 1–2 hop per pemindaian. Scanner native membatasi 10 transaksi/signature per alamat, 24 request HTTP, 64 node, 128 edge dan 60 detik; satu hop Bitcoin dapat berisi node transaksi serta node output. Scanner EVM membatasi 15 transaksi per kategori/alamat, 36 request, 64 node, 128 edge dan 90 detik. Batas ini dapat memotong riwayat sebelum seluruh hop tercapai.
+
+## Konfigurasi `.env`
+
+Salin `.env.example` ke `.env` bila belum ada:
 
 ```dotenv
 ETHERSCAN_API_KEY=
@@ -56,88 +110,50 @@ ETHERSCAN_BASE_URL=https://api.etherscan.io/v2/api
 ETHERSCAN_FALLBACK_EXPLORER_URL=https://eth.blockscout.com/api
 ```
 
-`.env` di folder `main.py` dibaca otomatis. Environment shell lebih utama; key opsional pada UI berlaku untuk request tersebut saja. Key tidak dimasukkan ke graph, log API PAKD, localStorage, ekspor atau error validasi. File `.env` diabaikan Git; jangan membagikan file yang telah berisi key.
+`.env` dibaca otomatis dari folder `main.py`; environment shell lebih utama. Key opsional UI hanya berlaku pada request itu. BTC dan Solana tidak menerima key Etherscan. Key tidak masuk ke graph, log API PAKD, ekspor atau respons error validasi. `.env` diabaikan Git.
 
-Dengan key, klien memakai **Etherscan V2 `chainid` sesuai jaringan**. Tanpa key, fallback dipilih per chain dari allowlist HTTPS resmi. URL Ethereum pada variabel fallback tidak digunakan untuk menyamar sebagai chain lain.
+Layanan publik dapat menolak permintaan atau terkena rate limit. Scanner mengembalikan error yang jelas bila provider gagal; hasil demo deterministik hanya berasal dari mode skenario. Akses live semua provider/key belum otomatis terjamin oleh keberhasilan tes mock.
 
-| Chain | ID | Explorer | Fallback tanpa key |
-| --- | --- | --- | --- |
-| Ethereum | 1 | etherscan.io | eth.blockscout.com |
-| BSC | 56 | bscscan.com | Memerlukan key Etherscan; tidak ada fallback BSC yang diasumsikan |
-| Polygon | 137 | polygonscan.com | polygon.blockscout.com |
-| Arbitrum | 42161 | arbiscan.io | arbitrum.blockscout.com |
-| Optimism | 10 | optimistic.etherscan.io | optimism.blockscout.com |
-| Base | 8453 | basescan.org | base.blockscout.com |
-| TRON | null / fixture `tron` | tronscan.org | Skenario TRC-20 sintetis saja; bukan endpoint EVM live |
+## Bridge EVM dan batas atribusi
 
-Ketersediaan chain dan kuota tergantung paket serta kebijakan provider. Dukungan URL V1 hanya kompatibilitas Ethereum; gunakan V2 untuk multichain. Fallback publik dapat gagal, berubah, atau terlambat mengindeks. Tidak ada jaminan selalu tersedia dan tidak ada transaksi demo yang disisipkan sebagai hasil live.
+Deteksi bridge memakai kamus kontrak terikat chain beserta referensi publik. Auto-scan mencari kandidat penerimaan pada alamat sama di chain tujuan, aset sama, rentang waktu 2 jam, dan toleransi jumlah. Setelah kandidat ditemukan, trailing di chain tujuan dilanjutkan.
 
-## Scoped Mirror DB & REST API PAKD
+Garis live berstatus `CANDIDATE_UNVERIFIED`, bukan bukti settlement. Swap, perubahan aset/alamat, relayer dan aktivitas pool dapat memutus atribusi. Decoder penuh swap Uniswap dan pesan bridge belum tersedia. BTC↔Solana↔EVM pada kasus default adalah **fan-out withdrawal dari PAKD**, bukan klaim pelacakan bridge lintas-family secara live.
 
-Provider memakai SQLite nyata yang di-seed saat startup. Tiga tabel mencakup hanya kolom scoped:
+## Governance
 
-| Tabel | Kolom yang direplikasi |
-| --- | --- |
-| `ojk_scoped_fiat_inflows` | pakd_code, inflow_id, va_or_account_number, rrn_reference, amount_idr, inflow_timestamp, intake_channel, user_uid, kyc_nik_masked, kyc_name_masked, remaining_fiat_balance_idr |
-| `ojk_scoped_crypto_withdrawals` | withdrawal_id, pakd_code, user_uid, linked_inflow_id, token_symbol, crypto_amount, source_chain, source_chain_id, withdrawal_tx_hash, initial_wallet_address, withdrawal_timestamp, remaining_crypto_balance |
-| `ojk_scoped_wallet_registry` | wallet_address, chain, chain_id, pakd_code, user_uid, kyc_nik_masked, wallet_role, p2p_offramp_pujk_name, p2p_offramp_account_number |
+IASC menyiapkan rekomendasi; PUJK/PAKD atau issuer terkait memutuskan dan mengeksekusi tindakan. PoC ini hanya mensimulasikan dispatch dan callback:
 
-Daftar `EXCLUDED_INTERNAL_PAKD_FIELDS` hanya menampilkan **nama kolom yang dikecualikan**, seperti password_hash, api_secret, internal_orderbook, fee_tier, cold_wallet_private_key dan device_imei. Nilai kolom internal tersebut tidak di-seed, tidak disinkronkan, dan tidak dikirim dalam respons/log.
+`NOT_SENT → SENT_WAITING_DECISION → APPROVED / PARTIAL / REJECTED_BY_INSTITUTION`
 
-Consumer menyediakan `consume_pakd_inflow_lookup_api`, `consume_pakd_wallet_reverse_lookup_api`, dan `consume_pakd_p2p_lookup_api`. Forward lookup mencocokkan VA/RRN/nominal tepat serta relasi inflow-withdrawal. Reverse lookup menyertakan chain agar alamat EVM yang sama pada dua jaringan tidak dianggap satu record. Hasil ambigu ditolak. Whitelist withdrawal menunjukkan alamat terdaftar, bukan bukti kendali wallet.
+Confirmed tetap nol saat tiket dikirim. Persetujuan dibatasi permohonan dan saldo eligible yang teratribusi; keputusan terminal immutable dan replay identik idempoten. Hold P2P hanya pada order terkait. Draft issuer USDT/USDC tidak memakai private key, signing, atau broadcast; pembatasan issuer pada seluruh alamat tidak mendukung freeze nominal parsial. Bitcoin/Solana tidak dianggap memiliki fungsi blacklist issuer universal.
 
-Log panggilan tersimpan **per trace**, berisi endpoint, payload request, status HTTP, latency, field scoped dan payload respons. Modal **Inspector PAKD Mirror API & Scoped Schema** menampilkan log tersebut serta perbandingan kolom yang disertakan/dikecualikan. Preview juga diperoleh melalui consumer API. Semua identitas, NIK/nama tersamar, rekening, saldo dan relasi nasabah di provider merupakan seed sintetis.
-
-## Live Multichain & Cross-Chain Bridge
-
-1. Buka tab **Live Multichain Wallet Tracker**, pilih Source Chain dan wallet EVM publik.
-2. Atur key melalui `.env` atau UI, pilih 1/2 hop dan filter aset.
-3. Aktifkan **Auto-Scan Cross-Chain Bridge ke Jaringan EVM Lain** untuk memeriksa aktivitas alamat yang sama pada chain lain.
-4. Node memiliki badge chain. Klik wallet/garis untuk provenance dan tautan explorer yang sesuai chain.
-5. Hulu FNA/PAKD opsional pada hasil live hanya ilustrasi sintetis; bukan respons API PAKD atau withdrawal yang membuktikan asal seed wallet.
-
-Deteksi memakai kamus kontrak bridge **yang terikat chain dan memiliki sumber publik**. Ketika transfer menyentuh kontrak bridge yang dikenal, node ditandai `BRIDGE_PROTOCOL`. Pivot memeriksa penerimaan pada alamat yang sama di jaringan lain dalam rentang waktu 2 jam sesudah transaksi sumber, aset yang sama dan rentang nominal 80–105%, lalu melanjutkan outgoing trailing di chain tujuan.
-
-**Kecocokan alamat dan waktu adalah kandidat korelasi, bukan bukti settlement bridge.** Garis pivot live diberi status `CANDIDATE_UNVERIFIED`, mencantumkan kedua referensi transaksi aktual dan keterbatasan pencocokan. Nilai transfer atau simbol serupa tidak membuktikan bahwa dana tersebut sama. Aktivitas lintas-chain tanpa bukti bridge tetap ditampilkan sebagai aktivitas terpisah. Konfirmasi operasional memerlukan decoder event/message bridge atau bukti settlement protokol; token swap, fee dan relayer dapat mengubah jumlah/alamat penerima.
-
-Engine mengambil `txlist`, `tokentx`, dan saldo native sesuai chain. Token USDT/USDC terikat kontrak chain masing-masing; tidak mengandalkan simbol saja. Decimal menjaga presisi. Hash/log identity mencakup chain agar tidak saling menimpa. Budget 36 request, 64 node, 128 edge, sekitar 2 request/detik dan deadline 90 detik menjaga demo tetap terbatas; metadata melaporkan truncation/chain yang tidak tersedia. Ini bukan penarikan riwayat penuh, tidak mencakup seluruh internal transfer/NFT, dan tidak menghitung recovery/taint dari aktivitas publik.
-
-## Skenario terpandu dan governance
-
-Enam preset: empat kasus awal tetap tersedia (P2P full-cycle, direct VA/loopback, DEX/cold wallet, golden period), ditambah dua kasus bridge yang menampilkan Ethereum → bridge → Arbitrum/BSC → hop lanjutan → loopback PAKD. Semua transaksi dan relasi cross-chain pada preset adalah sintetis yang secara eksplisit ditandai sebagai skenario.
-
-FNA tetap sumber handoff rekening bank. IASC mengirim rekomendasi; PUJK/PAKD atau issuer terkait memutuskan. Status request: `NOT_SENT` → `SENT_WAITING_DECISION` → approve/partial/reject oleh institusi. Pengiriman tidak menaikkan confirmed frozen. Nominal persetujuan dibatasi permohonan dan saldo eligible. Replay identik idempoten; keputusan terminal bertentangan ditolak. Hold P2P hanya pada order terkait. Draft issuer tidak menandatangani atau mengirim transaksi.
-
-Nilai IDR/probabilitas pada preset adalah asumsi demo dengan kurs tetap, bukan jaminan pengembalian. Hasil live tidak membuat tiket freeze otomatis. Input handoff manual dapat mencocokkan record scoped melalui API tetapi asal FNA tetap belum terverifikasi dan tidak menghasilkan rekomendasi otomatis.
+Evidence packet memuat snapshot FNA, respons API PAKD, rincian withdrawal/cabang, graph dan digest. Seluruh keputusan pada preset tetap simulasi. Handoff manual tanpa snapshot FNA terverifikasi tidak menghasilkan rekomendasi otomatis.
 
 ## Endpoint dan modul
 
 | Endpoint | Fungsi |
 | --- | --- |
-| `GET /api/v1/trail/scenarios` | Katalog preset handoff |
-| `POST /api/v1/trail/trace-report` | FNA handoff → consumer API PAKD → graph skenario |
-| `POST /api/v1/trail/live-etherscan` | wallet_address, source_chain, auto_scan_cross_chain, max_hops, token_filter, direction, etherscan_api_key?, simulate_fna_and_mirror_origin |
-| `POST /api/v1/pakd-mirror-api/{pakd_code}/inflow-lookup` | Endpoint provider lookup inflow scoped |
-| `POST /api/v1/pakd-mirror-api/{pakd_code}/wallet-lookup` | Endpoint provider reverse wallet scoped |
-| `POST /api/v1/pakd-mirror-api/{pakd_code}/p2p-lookup` | Endpoint provider settlement P2P scoped |
-| `GET /api/v1/mirror-db/records` | Consumer mengambil schema/preview scoped dari provider |
-| `GET /api/v1/trail/address/{address}/expand` | Ekspansi trace scoped ke chain; live EVM opsional |
+| `GET /api/v1/trail/scenarios` | Katalog kasus, default multi-chain dispersal |
+| `POST /api/v1/trail/trace-report` | Handoff FNA → API PAKD → graph + chain_dispersals |
+| `POST /api/v1/trail/live-scanner` | Unified scanner: wallet_address, source_chain, max_hops, token_filter, direction, etherscan_api_key?, auto_scan_cross_chain?, simulate_fna_and_mirror_origin? |
+| `POST /api/v1/trail/live-etherscan` | Alias kompatibilitas endpoint live sebelumnya |
+| `POST /api/v1/pakd-mirror-api/{pakd_code}/inflow-lookup` | Inflow + chains_used + daftar scoped withdrawals |
+| `POST /api/v1/pakd-mirror-api/{pakd_code}/wallet-lookup` | Reverse wallet lookup yang terikat chain |
+| `POST /api/v1/pakd-mirror-api/{pakd_code}/p2p-lookup` | Referensi P2P off-ramp scoped |
+| `GET /api/v1/mirror-db/records` | Preview schema/data scoped lewat consumer API |
 | `POST /api/v1/governance/send-freeze-request` | Dispatch rekomendasi simulasi |
-| `POST /api/v1/governance/simulate-institution-decision` | Callback keputusan institusi simulasi |
-| `POST /api/v1/recovery/execute-freeze` | 410 Gone; tidak ada direct auto-freeze |
+| `POST /api/v1/governance/simulate-institution-decision` | Callback keputusan simulasi |
+| `POST /api/v1/recovery/execute-freeze` | 410 Gone |
 
-`pakd_scoped_mirror_provider.py` memiliki SQLite/DTO/router PAKD; `pakd_api_consumer.py` hanya menangani HTTP consumer dan log; `p2p_and_pakd_bridge.py` menghubungkan handoff dan API PAKD; `chains.py` mendefinisikan jaringan/explorer; `etherscan_client.py` membaca multichain dan pivot; `scenario_trailer.py` mengolah ledger sintetis; `recovery_action.py` menjaga keputusan institusi.
+`chains.py` berisi family, scanner, validasi dan explorer. `multichain_scanner.py` mengarahkan BTC/Solana/EVM. `etherscan_client.py` menangani EVM/bridge. `pakd_scoped_mirror_provider.py` memiliki SQLite/REST; `pakd_api_consumer.py` menjaga boundary HTTP scoped. `scenario_trailer.py` dan `p2p_and_pakd_bridge.py` membangun graph sintetis; `recovery_action.py` menjaga keputusan institusi.
 
-## Cost, pengujian dan batas PoC
+## Pengujian dan batas operasional
 
-Desain ini mengurangi kebutuhan lisensi label vendor untuk resolusi nasabah domestik dengan menggunakan API scoped milik PAKD dan transaksi publik. Integrasi produksi tetap membutuhkan perjanjian akses, API authentication/mTLS, otorisasi perkara, audit, retensi, monitoring dan kualitas replikasi masing-masing PAKD. Demo gratis tidak membuktikan biaya produksi nol atau menggantikan intelligence global.
+Jalankan `python -m pytest -q`, `node tests/frontend_theme_selfcheck.cjs`, dan `node tests/frontend_guided_selfcheck.cjs`. Suite memakai SQLite provider nyata, HTTP ASGI dan HTTP/RPC mock agar dapat berjalan offline; smoke jaringan dijalankan terpisah.
 
-Validasi final: **176 tes pytest lulus**; Light/Dark mode, penyimpanan tema, inspector API dan dua skenario bridge juga diperiksa melalui browser.
+Smoke publik 22 Oktober 2026 berhasil mengakses Mempool.space, Solana Mainnet RPC dan Ethereum Blockscout. Pada sampel yang diperiksa tidak ada outbound native yang dapat diurai; hasil kosong bukan bukti tidak adanya transaksi sepanjang riwayat. Solana tetap mencatat signature gagal, instruksi yang tidak didukung serta versi transaksi yang belum didukung tanpa mengarang transfer. Akses Etherscan dengan key/kuota akun dan konektor PAKD produksi belum diuji langsung.
 
-Jalankan `python -m pytest -q`. Tes memakai SQLite provider nyata, HTTP ASGI dan mock explorer agar tetap offline; menguji allowlist respons/log, isolasi PAKD/chain, forward/reverse matching, pivot kandidat dan trailing chain tujuan, URL explorer, batas sumber daya, perlindungan key, serta regresi governance. Smoke jaringan dilakukan terpisah. Pemeriksaan tema opsional: `node tests/frontend_theme_selfcheck.cjs`. Peringatan deprecation Starlette TestClient/httpx tidak menggagalkan tes.
+State lokal maksimum 128 trace/1 jam dan database in-memory hilang saat restart. Tidak ada autentikasi lembaga, mTLS, callback mitra produksi atau audit durable. Jalankan pada loopback dengan data sintetis. Integrasi produksi memerlukan perjanjian akses PAKD, dasar pemrosesan, otorisasi perkara, retensi dan monitoring; biaya demo tidak mencerminkan biaya operasi produksi.
 
-Smoke jaringan pada 22 Oktober 2026: fallback Ethereum berhasil diakses; endpoint fallback Arbitrum, Base, Optimism dan Polygon belum dapat diakses dari jaringan pengujian. Routing Etherscan V2 dan fallback setiap chain diuji dengan HTTP mock. Akses nyata key Etherscan Anda dan settlement bridge belum diverifikasi.
-
-State 128 trace/1 jam, database in-memory dan satu proses; restart menghapus state. Endpoint provider belum memakai autentikasi produksi. Jalankan pada loopback dengan data sintetis. Identitas PAKD nyata, key Etherscan berbayar, dan settlement bridge terkonfirmasi tidak diasumsikan sudah diuji.
-
-Referensi: [Etherscan V2](https://docs.etherscan.io/introduction), [chain yang didukung](https://docs.etherscan.io/supported-chains), [rate limits](https://docs.etherscan.io/rate-limits), [Blockscout account API](https://docs.blockscout.com/devs/apis/rpc/account), [Across contracts](https://docs.across.to/chains-and-contracts). Referensi kontrak bridge lain dicantumkan pada metadata kamus. Dokumentasi diperiksa pada 22 Oktober 2026.
+Referensi: [Mempool REST](https://mempool.space/docs/api/rest), [Blockstream Esplora](https://github.com/Blockstream/esplora/blob/master/API.md), [Solana signatures](https://solana.com/docs/rpc/http/getsignaturesforaddress), [Solana transactions](https://solana.com/docs/rpc/http/gettransaction), [Etherscan V2](https://docs.etherscan.io/introduction). Dokumentasi diperiksa pada 22 Oktober 2026.

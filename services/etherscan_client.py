@@ -267,7 +267,7 @@ class EtherscanClient:
     async def pivot_across_chains(self, wallet_address, source_chain, amount, timestamp, *, fetch, token_filter="ALL", token_symbol=None):
         candidates=[]
         for chain in CHAIN_CONFIG:
-            if chain in {source_chain,"TRON"}:continue
+            if CHAIN_CONFIG[chain]["chain_family"] != "EVM" or chain == source_chain:continue
             if not self.api_key and not CHAIN_CONFIG[chain]["fallback_url"]:continue
             actions=["txlist"] if token_filter=="ETH" else ["tokentx"] if token_filter in TOKEN_CONTRACTS else ["txlist","tokentx"]
             for action in actions:
@@ -291,7 +291,7 @@ class EtherscanClient:
         if type(max_hops) is not int or not 1<=max_hops<=3:raise ValueError("max_hops harus 1 sampai 3")
         if token_filter not in {"ALL","ETH","USDT","USDC"} or direction not in {"OUTBOUND","BOTH"}:raise ValueError("Filter/arah tidak didukung")
         source_chain=normalize_chain(source_chain)
-        if source_chain=="TRON":raise ValueError("TRON hanya simulasi")
+        if CHAIN_CONFIG[source_chain]["chain_family"] != "EVM":raise ValueError("Gunakan scanner khusus untuk jaringan non-EVM")
         seed=seed_wallet_address.lower();nodes={};edges=[];seen=set();visited=set();queue=deque([(source_chain,seed,0)])
         warnings=["LIVE READ ONLY: transaksi publik bukan bukti kepemilikan, taint atau recovery.",
             "Sampel 15 record terbaru per jenis/wallet; internal transfers, NFT, dan saldo ERC-20 tidak dicakup.",
@@ -385,7 +385,7 @@ class EtherscanClient:
                                         queue.appendleft((destination,address,0))
                     if auto_scan_cross_chain:
                         for chain in CHAIN_CONFIG:
-                            if chain in {source_chain,"TRON"} or not self.api_key and not CHAIN_CONFIG[chain]["fallback_url"]:continue
+                            if CHAIN_CONFIG[chain]["chain_family"] != "EVM" or chain == source_chain or not self.api_key and not CHAIN_CONFIG[chain]["fallback_url"]:continue
                             action="tokentx" if token_filter in TOKEN_CONTRACTS else "txlist"
                             rows=await fetch(chain,action,seed)
                             txs,_=self._parse(rows,action,seed,token_filter,"BOTH",chain)

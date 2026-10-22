@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from schemas import CrossRailGraphResponse, FNAMoneyTrailHandoffInput, SendFreezeRequest, SimulateInstitutionDecisionInput, LiveWalletTrailInput, PAKDAPICallLog, TrailNode, TrailEdge
 from scenarios import SCENARIOS, get_scenario, scenario_catalog
 from services.etherscan_client import EtherscanClient, EtherscanAPIError
+from services.multichain_scanner import MultichainScanner, ScannerAPIError
 from services.pakd_api_consumer import PAKDAPIConsumer, PAKDAPIError
 from services.pakd_scoped_mirror_provider import router as pakd_mirror_router
 from services.chains import CHAIN_CONFIG, normalize_chain, explorer_address_url, explorer_tx_url
@@ -22,8 +23,8 @@ from services.recovery_action import plan_governance_requests, build_evidence_pa
 
 D = Decimal
 ROOT = Path(__file__).resolve().parent
-app = FastAPI(docs_url=None, redoc_url=None, title="In-House OJK Crypto-Trails · PoC", version="4.0.0",
-              description="PAKD Scoped Mirror REST API sintetis + multichain explorer live read-only. Tata kelola freeze simulasi; bukan sistem resmi OJK.")
+app = FastAPI(docs_url=None, redoc_url=None, title="In-House OJK Crypto-Trails · PoC", version="5.0.0",
+              description="PAKD Scoped Mirror REST API sintetis + scanner BTC/Solana/EVM live read-only. Tata kelola freeze simulasi; bukan sistem resmi OJK.")
 # shortcut: state lokal maksimum 128 trace selama 1 jam; gunakan penyimpanan terenkripsi/audit durable sebelum multi-worker/produksi.
 TRACES: OrderedDict = OrderedDict()
 app.include_router(pakd_mirror_router)
@@ -52,13 +53,21 @@ def store_trace(graph):
 def stamp_chain_evidence(nodes, edges):
     for node in nodes:
         if node.chain:
-            node.chain_id = CHAIN_CONFIG[normalize_chain(node.chain)]["chain_id"]
+            config = CHAIN_CONFIG[normalize_chain(node.chain)]
+            node.chain_id = config["chain_id"]
+            node.chain_family = config["chain_family"]
+            node.scanner_provider = node.scanner_provider or node.metadata.get("scanner_provider") or config["scanner_provider"]
+            node.chain_branch = node.chain_branch or normalize_chain(node.chain)
             if node.address:
                 node.explorer_url = explorer_address_url(node.chain, node.address) or ""
     for edge in edges:
         edge.chain = edge.chain or edge.metadata.get("chain")
         if edge.chain:
-            edge.chain_id = CHAIN_CONFIG[normalize_chain(edge.chain)]["chain_id"]
+            config = CHAIN_CONFIG[normalize_chain(edge.chain)]
+            edge.chain_id = config["chain_id"]
+            edge.chain_family = config["chain_family"]
+            edge.scanner_provider = edge.scanner_provider or edge.metadata.get("scanner_provider") or config["scanner_provider"]
+            edge.chain_branch = edge.chain_branch or normalize_chain(edge.chain)
             if edge.tx_hash:
                 edge.explorer_url = explorer_tx_url(edge.chain, edge.tx_hash) or ""
 
@@ -91,6 +100,7 @@ async def health():
     except ValueError:
         mode = "INVALID_ETHERSCAN_CONFIGURATION"
     return {"status": "ok", "simulation": True, "live_provider": mode,
+        "dedicated_scanners": {"BTC": "MEMPOOL_SPACE_WITH_BLOCKSTREAM_FALLBACK", "SOLANA": "SOLANA_MAINNET_RPC", "EVM": mode},
         "mirror_access": "SCOPED_REST_API_ASGI_DEMO", "supported_chains": list(CHAIN_CONFIG), "governance_mode": "SIMULATED_DISPATCH_AND_INSTITUTION_DECISIONS",
         "fna_mode": "IMPORTED_HANDOFF_ONLY"}
 
@@ -103,13 +113,14 @@ async def mirror_records():
         raise HTTPException(502, str(exc)) from None
 
 
+@app.post("/api/v1/trail/live-scanner", response_model=CrossRailGraphResponse)
 @app.post("/api/v1/trail/live-etherscan", response_model=CrossRailGraphResponse)
 async def trace_live_wallet(payload: LiveWalletTrailInput):
     try:
-        result = await EtherscanClient(api_key=payload.etherscan_api_key).trace_real_wallet_on_etherscan(
+        result = await MultichainScanner().trace_wallet(
             payload.wallet_address, max_hops=payload.max_hops, token_filter=payload.token_filter, direction=payload.direction,
-            source_chain=payload.source_chain, auto_scan_cross_chain=payload.auto_scan_cross_chain)
-    except (EtherscanAPIError, PAKDAPIError) as exc:
+            source_chain=payload.source_chain, auto_scan_cross_chain=payload.auto_scan_cross_chain, etherscan_api_key=payload.etherscan_api_key)
+    except (EtherscanAPIError, ScannerAPIError, PAKDAPIError) as exc:
         raise HTTPException(502, str(exc)) from None
     except ValueError:
         raise HTTPException(503, "Konfigurasi explorer tidak valid; periksa host resmi pada .env") from None
@@ -117,7 +128,8 @@ async def trace_live_wallet(payload: LiveWalletTrailInput):
     warnings = list(result["warnings"])
     handoff = None
     if payload.simulate_fna_and_mirror_origin:
-        seed = next(node for node in nodes if node.address and node.address.lower() == payload.wallet_address.lower() and normalize_chain(node.chain) == payload.source_chain)
+        normalize = str.lower if CHAIN_CONFIG[payload.source_chain]["chain_family"] == "EVM" else str
+        seed = next(node for node in nodes if node.address and normalize(node.address) == normalize(payload.wallet_address) and normalize_chain(node.chain) == payload.source_chain)
         nodes[:0] = [
             TrailNode(id="live-origin-bank", label="FNA Money Trails · hulu simulasi", node_zone="FIAT_BANK",
                 node_type="SIMULATED_FNA_ORIGIN", hop=0, metadata={"evidence_source": "SIMULATED_ORIGIN", "simulation": True}),
@@ -137,7 +149,7 @@ async def trace_live_wallet(payload: LiveWalletTrailInput):
         total_scam_idr=D(0), total_traced_idr=D(0), recoverable_amount_idr=D(0), recovery_probability_pct=D(0),
         hop_count=max((node.hop for node in nodes), default=0), route_badges=[payload.source_chain + " LIVE", "PAKD MIRROR API", "AUTO CROSS-CHAIN SCAN" if payload.auto_scan_cross_chain else "SINGLE SOURCE CHAIN"],
         warnings=warnings, live_metadata={**result["metadata"], "simulated_origin": payload.simulate_fna_and_mirror_origin},
-        pakd_api_exchange_logs=result.get("pakd_api_exchange_logs", []))
+        pakd_api_exchange_logs=result.get("pakd_api_exchange_logs", []), chains_used=sorted({normalize_chain(node.chain) for node in nodes if node.chain}))
     store_trace(graph)
     return graph
 
@@ -207,16 +219,17 @@ async def trace_report(handoff: FNAMoneyTrailHandoffInput):
     if scenario.get("expansion_note"):
         warnings.append("Atribusi berhenti pada DEX; output swap tidak diasumsikan milik pelaku tanpa bukti tambahan.")
     badges = ["FNA HANDOFF", "PAKD MIRROR API", "DIRECT VA" if scenario["onramp"]["kind"] == "VA" else "P2P ON-RAMP DETECTED"]
-    if any(p.p2p_direction == "OFF_RAMP_WITHDRAWAL" for p in p2p):
+    if scenario.get("dispersal_offramp") or any(p.p2p_direction == "OFF_RAMP_WITHDRAWAL" for p in p2p):
         badges.append("P2P OFF-RAMP CASH-OUT DETECTED")
     edges.sort(key=lambda edge: edge.timestamp or handoff.fiat_transfer_timestamp)
     graph = CrossRailGraphResponse(trace_id=trace_id, iasc_ticket_id=handoff.iasc_ticket_id, fna_trail_id=handoff.fna_trail_id,
         scenario_id=handoff.scenario_id, fna_handoff=handoff, nodes=nodes, edges=edges, pakd_trails=pakd,
         p2p_detections=p2p, total_scam_idr=handoff.fiat_transfer_amount_idr, total_traced_idr=handoff.fiat_transfer_amount_idr,
         recoverable_amount_idr=recoverable, recovery_probability_pct=D(scenario["probability"]),
-        total_traced_usdt=D(scenario["onramp"]["crypto_amount"]) + D(scenario["onramp"].get("held_escrow_idr", "0")) / D(16000),
+        total_traced_usdt=sum((D(item["crypto_amount"]) for item in scenario["chain_dispersals"] if item["token_symbol"] == "USDT"), D(0)) if scenario.get("multi_chain_dispersal") else D(scenario["onramp"]["crypto_amount"]) + D(scenario["onramp"].get("held_escrow_idr", "0")) / D(16000),
         hop_count=max((n.hop for n in nodes), default=0), route_badges=badges, governance_requests=requests, warnings=warnings,
-        pakd_api_exchange_logs=consumer.logs)
+        pakd_api_exchange_logs=consumer.logs, chain_dispersals=scenario.get("chain_dispersals", []),
+        chains_used=list(dict.fromkeys(item["chain"] for item in scenario.get("chain_dispersals", []))))
     store_trace(graph)
     return graph
 
@@ -230,7 +243,7 @@ async def expand_address(address: str, trace_id: str = Query(min_length=1, max_l
         canonical = normalize_chain(chain)
     except ValueError:
         raise HTTPException(422, "Jaringan tidak didukung") from None
-    normalize = str if canonical == "TRON" else str.lower
+    normalize = str.lower if CHAIN_CONFIG[canonical]["chain_family"] == "EVM" or canonical == "BTC" and address.lower().startswith("bc1") else str
     source = next((n for n in graph.nodes if n.address and normalize(n.address) == normalize(address) and normalize_chain(n.chain) == canonical), None)
     if not source:
         raise HTTPException(404, "Address/jaringan tidak ada dalam trace ini")
@@ -241,10 +254,10 @@ async def expand_address(address: str, trace_id: str = Query(min_length=1, max_l
         raise HTTPException(422, "Batas ukuran graph tercapai; mulai investigasi baru")
     if live:
         if canonical == "TRON":
-            raise HTTPException(422, "TRON hanya tersedia pada preset sintetis; live explorer mendukung chain EVM")
+            raise HTTPException(422, "TRON hanya tersedia pada preset sintetis; live scanner mendukung BTC, Solana dan EVM")
         try:
-            result = await EtherscanClient().trace_real_wallet_on_etherscan(source.address, max_hops=1, source_chain=canonical)
-            live_seed = next(node for node in result["nodes"] if node.address.lower() == source.address.lower() and normalize_chain(node.chain) == canonical)
+            result = await MultichainScanner().trace_wallet(source.address, max_hops=1, source_chain=canonical)
+            live_seed = next(node for node in result["nodes"] if node.address and normalize(node.address) == normalize(source.address) and normalize_chain(node.chain) == canonical)
             result["nodes"] = [node for node in result["nodes"] if node.id != live_seed.id]
             for edge in result["edges"]:
                 if edge.source == live_seed.id:
@@ -252,7 +265,7 @@ async def expand_address(address: str, trace_id: str = Query(min_length=1, max_l
                 if edge.target == live_seed.id:
                     edge.target = source.id
             result["simulation"] = False
-        except (EtherscanAPIError, PAKDAPIError) as exc:
+        except (EtherscanAPIError, ScannerAPIError, PAKDAPIError) as exc:
             raise HTTPException(502, str(exc)) from None
         except ValueError:
             raise HTTPException(503, "Konfigurasi explorer tidak valid") from None

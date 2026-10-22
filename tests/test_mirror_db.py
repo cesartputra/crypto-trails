@@ -26,9 +26,13 @@ def test_consumer_uses_http_forward_reverse_and_scoped_logs(scenario_id):
         consumer=PAKDAPIConsumer()
         result=await consumer.consume_pakd_inflow_lookup_api(handoff['pakd_gateway_va_or_account'],handoff['rrn_reference_number'],handoff['fiat_transfer_amount_idr'])
         assert result['user_uid']==scenario['onramp']['uid']
-        assert result['withdrawal_tx_hash']==scenario['onramp']['withdrawal_tx_hash']
-        wallet=await consumer.consume_pakd_wallet_reverse_lookup_api(result['initial_wallet_address'],result['source_chain'])
-        assert wallet['user_uid']==result['user_uid']
+        assert result['chains_used']==list(dict.fromkeys(b['chain'] for b in scenario['chain_dispersals']))
+        assert len(result['withdrawals'])==len(scenario['chain_dispersals'])
+        if len(result['withdrawals'])==1:
+            assert result['withdrawal_tx_hash']==scenario['onramp']['withdrawal_tx_hash']
+        for withdrawal in result['withdrawals']:
+            wallet=await consumer.consume_pakd_wallet_reverse_lookup_api(withdrawal['initial_wallet_address'],withdrawal['chain'])
+            assert wallet['user_uid']==result['user_uid']
         assert consumer.logs and all(log['response_status_code']==200 for log in consumer.logs)
         assert all(log['endpoint_url'].startswith('http://pakd-mirror.local/api/') for log in consumer.logs)
         assert all(log['latency_ms']>=0 for log in consumer.logs)

@@ -35,11 +35,11 @@ def plan_governance_requests(scenario, nodes):
         elif node.metadata.get("recovery_institution") == "PAKD" and node.balance_crypto > 0:
             category, institution = "PAKD", node.metadata.get("platform", node.entity_label)
             crypto = D(node.metadata.get("tainted_balance_crypto", node.balance_crypto))
-            available = crypto * RATE
+            available = D(node.metadata["attributed_recoverable_amount_idr"]) if "attributed_recoverable_amount_idr" in node.metadata else crypto * RATE
         elif node.metadata.get("recovery_institution") == "ISSUER" and node.balance_crypto > 0:
             category, institution, scope = "STABLECOIN_ISSUER_OR_GLOBAL_EXCHANGE", "Tether" if node.asset == "USDT" else "Circle", "ISSUER_REVIEW"
             crypto = D(node.metadata.get("tainted_balance_crypto", node.balance_crypto))
-            available = crypto * RATE
+            available = D(node.metadata["attributed_recoverable_amount_idr"]) if "attributed_recoverable_amount_idr" in node.metadata else crypto * RATE
         if category is None:
             continue
         unit = (f"Tim Anti-Fraud PUJK {institution}" if category == "PUJK" else
@@ -51,6 +51,9 @@ def plan_governance_requests(scenario, nodes):
                 "merchant_full_account_freeze": False, "order_id": node.metadata.get("order_id"),
                 "evidence_preservation_only": available == 0, "simulated_institution_callback_only": True,
                 "note": "Keputusan penundaan/freeze berada pada institusi penerima; IASC hanya mengirim rekomendasi dan bukti."}))
+    limit = D(scenario["handoff"]["fiat_transfer_amount_idr"])
+    if any(not D(0) <= request.requested_amount_idr <= limit for request in requests) or sum((request.requested_amount_idr for request in requests), D(0)) > limit:
+        raise ValueError("Nilai recovery teratribusi tidak konsisten dengan nominal perkara")
     return requests
 
 
@@ -64,6 +67,7 @@ def build_evidence_packet(graph, request):
         "fna_handoff": graph.fna_handoff.model_dump(mode="json"),
         "nodes": [n.model_dump(mode="json") for n in graph.nodes], "edges": [e.model_dump(mode="json") for e in graph.edges],
         "pakd_trails": [r.model_dump(mode="json") for r in graph.pakd_trails],
+        "chain_dispersals": [item.model_dump(mode="json") for item in graph.chain_dispersals],
         "p2p_detections": [p.model_dump(mode="json") for p in graph.p2p_detections],
         "request": request.model_dump(mode="json")}
     digest = sha256(json.dumps(evidence, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
@@ -80,7 +84,8 @@ def build_evidence_packet(graph, request):
             "maximum_hold_idr": str(request.requested_amount_idr), "merchant_full_account_freeze": False,
             "preserve_order_kyc_and_settlement_evidence": True}
     if request.metadata["request_scope"] == "ISSUER_REVIEW":
-        contract_refs = {("USDT", "ETHEREUM_ERC20"): "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+        contract_refs = {("USDT", "ETHEREUM"): "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+                         ("USDT", "ETHEREUM_ERC20"): "0xdAC17F958D2ee523a2206206994597C13D831ec7",
                          ("USDT", "TRON_TRC20"): "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t",
                          ("USDC", "ETHEREUM_ERC20"): "0xA0b86991c6218b36c1d19d4a2e9eb0ce3606eb48"}
         if (node.asset, node.chain) not in contract_refs:

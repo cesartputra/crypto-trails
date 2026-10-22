@@ -11,6 +11,19 @@ PARTIAL = "PARTIAL_FREEZE_BY_INSTITUTION"
 REJECTED = "REJECTED_BY_INSTITUTION"
 
 
+def test_multi_chain_recommendations_cannot_exceed_total_handoff(trace):
+    from schemas import TrailNode
+    from scenarios import get_scenario
+    from services.recovery_action import plan_governance_requests
+    graph = trace("multichain-dispersal")
+    nodes = [TrailNode.model_validate(node) for node in graph["nodes"]]
+    for node in nodes:
+        if node.metadata.get("attributed_recoverable_amount_idr"):
+            node.metadata["attributed_recoverable_amount_idr"] = "100000000"
+    with pytest.raises(ValueError, match="recovery"):
+        plan_governance_requests(get_scenario("multichain-dispersal"), nodes)
+
+
 def final_bank_request(graph):
     node = next(node for node in graph["nodes"] if node["node_type"] == "FINAL_CASHOUT")
     return next(item for item in graph["governance_requests"] if item["target_node_id"] == node["id"])

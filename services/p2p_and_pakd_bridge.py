@@ -38,6 +38,8 @@ class P2PAndPAKDBridge:
         ramp = scenario["onramp"]
         match = await self.consumer.consume_pakd_inflow_lookup_api(handoff.pakd_gateway_va_or_account,
             handoff.rrn_reference_number, handoff.fiat_transfer_amount_idr, pakd_code=ramp["platform"])
+        if scenario.get("multi_chain_dispersal"):
+            return self._resolve_dispersal_onramp(handoff, scenario, intake, match, nodes, edges)
         initial = next(w for w in scenario["wallets"] if w["id"] == ramp["initial_wallet"])
         normalize_address = str if normalize_chain(ramp["chain"]) == "TRON" else str.lower
         if (not match or match["user_uid"] != ramp["uid"] or match["withdrawal_tx_hash"] != ramp["withdrawal_tx_hash"]
@@ -133,6 +135,8 @@ class P2PAndPAKDBridge:
         return detections, [record]
 
     async def resolve_offramp(self, scenario, nodes, edges):
+        if scenario.get("multi_chain_dispersal"):
+            return await self._resolve_dispersal_offramp(scenario, nodes, edges)
         detections = []
         records = []
         accounts = {a["id"]: a for a in scenario["accounts"]}
@@ -231,3 +235,136 @@ class P2PAndPAKDBridge:
                 label=f"Rp {D(order['fiat_amount_idr']):,.0f} cash-out", amount_idr=D(order["fiat_amount_idr"]), timestamp=settlement["timestamp"],
                 metadata={"order_id": order["order_id"], "merchant_bank_account": order["merchant_bank_account"]})])
         return detections, records
+
+
+    def _resolve_dispersal_onramp(self, handoff, scenario, intake, match, nodes, edges):
+        ramp = scenario["onramp"]
+        branches = {b["withdrawal_id"]: b for b in scenario["chain_dispersals"]}
+        returned = {b["withdrawal_id"]: b for b in match["withdrawals"]} if match else {}
+        if not match or match["user_uid"] != ramp["uid"] or set(returned) != set(branches):
+            raise ValueError("Respons scoped API tidak sesuai cabang withdrawal UID")
+        for key, branch in branches.items():
+            actual = returned[key]
+            for field in ("chain", "chain_family", "scanner_provider", "token_symbol", "withdrawal_tx_hash", "withdrawal_timestamp"):
+                if actual[field] != branch[field]:
+                    raise ValueError("Respons scoped API tidak sesuai chain/token/withdrawal cabang")
+            expected_address = branch["initial_wallet_address"]
+            actual_address = actual["initial_wallet_address"]
+            if branch["chain_family"] == "EVM":
+                expected_address, actual_address = expected_address.lower(), actual_address.lower()
+            if (actual_address != expected_address or D(actual["crypto_amount"]) != D(branch["crypto_amount"])
+                or D(actual["fiat_value_idr"]) != D(branch["fiat_value_idr"])
+                or datetime.fromisoformat(actual["withdrawal_timestamp"]) < datetime.fromisoformat(intake["timestamp"])):
+                raise ValueError("Alamat, nominal atau waktu withdrawal cabang tidak sesuai")
+        if sum((D(b["fiat_value_idr"]) for b in branches.values()), D(0)) != handoff.fiat_transfer_amount_idr:
+            raise ValueError("Alokasi fiat cabang tidak sama dengan inflow handoff")
+        gateway = next((n for n in nodes if n.account == handoff.pakd_gateway_va_or_account), None)
+        if gateway is None:
+            raise ValueError("Gateway handoff tidak ada dalam snapshot FNA")
+        evidence = {"rrn_reference_number": handoff.rrn_reference_number, "rrn_exact_match": True,
+            "gateway_exact_match": True, "amount_exact_match": True, "intake_id": intake["intake_id"],
+            "bank_transfer_timestamp": handoff.fiat_transfer_timestamp.isoformat(), "pakd_intake_timestamp": intake["timestamp"],
+            "fna_trail_id": handoff.fna_trail_id, "evidence_source": SOURCE,
+            "mirror_deposit": match, "api_endpoint": match["api_endpoint"], "chains_used": match["chains_used"]}
+        nodes.append(TrailNode(id="pakd-fiat-deposit", label=f"PAKD fiat ledger · {ramp['platform']}",
+            node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_FIAT_DEPOSIT", entity_label=ramp["platform"],
+            amount_idr=handoff.fiat_transfer_amount_idr, hop=gateway.hop + 1,
+            metadata={**evidence, "architecture_zone": PAKD_ZONE, "uid": ramp["uid"]}))
+        edges.append(TrailEdge(id="pakd-intake-match", source=gateway.id, target="pakd-fiat-deposit", edge_type="FNA_PAKD_HANDOFF_MATCH",
+            label="RRN + gateway + nominal + waktu cocok", amount_idr=handoff.fiat_transfer_amount_idr,
+            timestamp=intake["timestamp"], metadata={**evidence, "correlation_only": True}))
+        nodes.append(TrailNode(id="scammer-uid", label=f"Akun PAKD · {ramp['uid']} · {len(match['chains_used'])} chain",
+            node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_USER_ACCOUNT", entity_label=ramp["platform"],
+            amount_idr=handoff.fiat_transfer_amount_idr, hop=gateway.hop + 2,
+            metadata={**evidence, "architecture_zone": PAKD_ZONE, "uid": ramp["uid"],
+                "kyc": {"name": match["kyc_name_masked"], "nik_masked": match["kyc_nik_masked"]},
+                "withdrawal_count": len(branches), "branch_fiat_total_idr": str(handoff.fiat_transfer_amount_idr)}))
+        edges.append(TrailEdge(id="pakd-branch-allocation", source="pakd-fiat-deposit", target="scammer-uid", edge_type="PAKD_INTERNAL_CREDIT",
+            label="Alokasi pembelian BTC + SOL + USDT", amount_idr=handoff.fiat_transfer_amount_idr,
+            timestamp=intake["timestamp"], metadata={"offchain": True, "correlation_only": True, "chains_used": match["chains_used"]}))
+        records = []
+        for key, branch in branches.items():
+            records.append(PAKDInternalTrailRecord(record_id=f"PAKD-TRAIL-{key}", target_node_id="scammer-uid",
+                pakd_name=ramp["platform"], intake_mechanism=intake["intake_mechanism"], pakd_user_uid=ramp["uid"],
+                kyc_nik_masked=match["kyc_nik_masked"], fiat_in_idr=D(branch["fiat_value_idr"]),
+                crypto_purchased_token=branch["token_symbol"], crypto_purchased_amount=D(branch["crypto_amount"]),
+                remaining_pakd_balance_idr=D(0), withdrawal_status="WITHDRAWN_ONCHAIN",
+                withdrawal_tx_hash=branch["withdrawal_tx_hash"], blockchain_network=branch["chain"], initial_wallet_address=branch["initial_wallet_address"],
+                metadata={"evidence_source": SOURCE, "scoped_withdrawal": returned[key], "chain_branch": branch["chain"],
+                    "scanner_provider": branch["scanner_provider"], "fiat_value_idr": branch["fiat_value_idr"], "api_endpoint": match["api_endpoint"]}))
+        return [], records
+
+    async def _resolve_dispersal_offramp(self, scenario, nodes, edges):
+        records = []
+        cashout = scenario["dispersal_offramp"]
+        for deposit in list(nodes):
+            if deposit.node_type != "DIRECT_EXCHANGE_DEPOSIT":
+                continue
+            match = await self.consumer.consume_pakd_wallet_reverse_lookup_api(deposit.address, deposit.chain)
+            if (not match or match["wallet_type"] != "CUSTODIAL_DEPOSIT_ADDRESS"
+                or match["user_uid"] != deposit.metadata.get("uid") or match["pakd_name"] != deposit.metadata.get("platform")):
+                raise ValueError("Reverse loopback scoped API tidak sesuai deposit cabang")
+            account_id = f"pakd-account-{deposit.id}"
+            remaining = D(deposit.metadata["attributed_recoverable_amount_idr"])
+            metadata = {**deposit.metadata, "mirror_match": match, "evidence_source": SOURCE,
+                "architecture_zone": PAKD_ZONE, "recovery_institution": "PAKD", "kyc_nik_masked": match["nik_masked"],
+                "linked_deposit_address": deposit.address, "attributed_recoverable_amount_idr": str(remaining)}
+            nodes.append(TrailNode(id=account_id, label=f"Akun PAKD penerima · {match['pakd_name']}",
+                node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_RECEIVER_ACCOUNT", entity_label=match["pakd_name"],
+                amount_idr=remaining, crypto_amount=deposit.crypto_amount, balance_crypto=deposit.balance_crypto,
+                chain=deposit.chain, chain_family=deposit.chain_family, scanner_provider=deposit.scanner_provider,
+                chain_branch=deposit.chain_branch, asset=deposit.asset, hop=deposit.hop + 1, metadata=metadata))
+            records.append(PAKDInternalTrailRecord(record_id=f"PAKD-DEPOSIT-{deposit.id}", target_node_id=account_id,
+                pakd_name=match["pakd_name"], intake_mechanism="ONCHAIN_DEPOSIT", pakd_user_uid=match["user_uid"],
+                kyc_nik_masked=match["nik_masked"], fiat_in_idr=D(0), crypto_purchased_token=deposit.asset,
+                crypto_purchased_amount=deposit.crypto_amount, remaining_pakd_balance_idr=remaining,
+                withdrawal_status="STILL_IN_PAKD_WALLET" if remaining else "SOLD_VIA_P2P_OFFRAMP", blockchain_network=deposit.chain,
+                metadata={"deposit_address": deposit.address, "evidence_source": SOURCE, "chain_branch": deposit.chain_branch}))
+            deposit.metadata.pop("recovery_institution", None)
+            deposit.metadata.update(mirror_match=match, linked_pakd_account_node_id=account_id)
+            deposit_times = [e.timestamp for e in edges if e.target == deposit.id and e.edge_type == "ONCHAIN_TRANSFER" and e.timestamp]
+            edges.append(TrailEdge(id=f"pakd-deposit-credit-{deposit.id}", source=deposit.id, target=account_id,
+                edge_type="PAKD_ONCHAIN_DEPOSIT_CREDIT", label=f"Setoran → UID {match['user_uid']}",
+                crypto_amount=deposit.crypto_amount, asset=deposit.asset, chain=deposit.chain,
+                chain_family=deposit.chain_family, scanner_provider=deposit.scanner_provider, chain_branch=deposit.chain_branch,
+                timestamp=max(deposit_times, default=None), metadata={"correlation_only": True, "evidence_source": SOURCE}))
+            if deposit.id != cashout["deposit_node_id"]:
+                continue
+            p2p = await self.consumer.consume_pakd_p2p_lookup_api(deposit.address, deposit.chain)
+            target = next(a for a in scenario["accounts"] if a["id"] == cashout["final_bank_node"])
+            amount, crypto = D(cashout["fiat_amount_idr"]), D(cashout["crypto_amount"])
+            sell_time, settle_time = datetime.fromisoformat(cashout["sell_timestamp"]), datetime.fromisoformat(cashout["settlement_timestamp"])
+            if (not p2p or p2p["user_uid"] != match["user_uid"] or p2p["p2p_offramp_account_number"] != target["account"]
+                or p2p["p2p_offramp_pujk_name"] != target["bank"] or crypto != deposit.crypto_amount
+                or amount != deposit.amount_idr or not deposit_times or sell_time < max(deposit_times) or settle_time < sell_time):
+                raise ValueError("Sell order/settlement cabang tidak cocok dengan scoped P2P dan deposit")
+            evidence = {"order_id": cashout["order_id"], "settlement_reference": cashout["settlement_reference"],
+                "settlement_timestamp": cashout["settlement_timestamp"], "fiat_out_idr": str(amount), "sold_crypto_amount": str(crypto),
+                "sold_token_symbol": deposit.asset, "deposit_address": deposit.address, "deposit_address_exact_match": True,
+                "exchange_uid_exact_match": True, "settlement_bank_account_exact_match": True,
+                "evidence_source": "SYNTHETIC_EXCHANGE_AND_BANK_SETTLEMENT", "chain_branch": deposit.chain_branch}
+            nodes.append(TrailNode(id="sol-offramp", label=f"P2P sell · {crypto} {deposit.asset}",
+                node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="P2P_OFFRAMP_SETTLEMENT", entity_label=match["pakd_name"],
+                amount_idr=amount, crypto_amount=crypto, asset=deposit.asset, chain=deposit.chain, chain_family=deposit.chain_family,
+                scanner_provider=deposit.scanner_provider, chain_branch=deposit.chain_branch, hop=deposit.hop + 2, metadata=evidence))
+            available = min(D(target["available_balance_idr"]), amount)
+            nodes.append(TrailNode(id=target["id"], label=target["label"], node_zone="FIAT_BANK", node_type=target["kind"],
+                entity_label=target["bank"], account=target["account"], amount_idr=amount, taint_score_pct=D(100),
+                chain_branch=deposit.chain_branch, hop=deposit.hop + 3,
+                metadata={**target, **evidence, "attributed_available_balance_idr": str(available),
+                    "attributed_settlement_idr": str(amount), "evidence_source": "SYNTHETIC_BANK_SETTLEMENT"}))
+            edges.extend([TrailEdge(id="sol-offramp-order", source=account_id, target="sol-offramp", edge_type="P2P_SETTLEMENT",
+                label=f"Jual {crypto} {deposit.asset}", crypto_amount=crypto, asset=deposit.asset, amount_idr=amount,
+                chain=deposit.chain, chain_family=deposit.chain_family, scanner_provider=deposit.scanner_provider,
+                chain_branch=deposit.chain_branch, timestamp=sell_time, metadata={**evidence, "correlation_only": True}),
+                TrailEdge(id="sol-offramp-bank", source="sol-offramp", target=target["id"], edge_type="P2P_SETTLEMENT",
+                label=f"Rp {amount:,.0f} cash-out", amount_idr=amount, chain_branch=deposit.chain_branch,
+                timestamp=settle_time, metadata=evidence)])
+            records.append(PAKDInternalTrailRecord(record_id=f"PAKD-SELL-{cashout['order_id']}", target_node_id="sol-offramp",
+                pakd_name=match["pakd_name"], intake_mechanism="P2P_OFF_RAMP_SETTLEMENT", pakd_user_uid=match["user_uid"],
+                kyc_nik_masked=match["nik_masked"], fiat_in_idr=D(0), crypto_purchased_token=deposit.asset,
+                crypto_purchased_amount=crypto, remaining_pakd_balance_idr=D(0), withdrawal_status="SOLD_VIA_P2P_OFFRAMP",
+                blockchain_network=deposit.chain, metadata=evidence))
+        if cashout["final_bank_node"] not in {n.id for n in nodes}:
+            raise ValueError("Cabang cash-out tidak ditemukan pada hasil trace")
+        return [], records
