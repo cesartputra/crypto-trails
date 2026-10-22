@@ -16,7 +16,8 @@ HASH = "0x" + "a" * 64
 
 
 class EmptyMirror:
-    def match_wallet_in_mirror_db(self, address):
+    logs=[]
+    async def consume_pakd_wallet_reverse_lookup_api(self, address, chain):
         return None
 
 
@@ -41,7 +42,7 @@ def token(sender=A, recipient=B, **extra):
 
 
 def run(handler, *, api_key="test-key", **options):
-    client = EtherscanClient(api_key=api_key, transport=httpx.MockTransport(handler), mirror_db=EmptyMirror())
+    client = EtherscanClient(api_key=api_key, transport=httpx.MockTransport(handler), pakd_consumer=EmptyMirror())
     return asyncio.run(client.trace_real_wallet_on_etherscan(A, **options))
 
 
@@ -71,7 +72,7 @@ def test_v2_real_transfers_decimal_balance_and_provenance():
     assert all(request.url.host == "api.etherscan.io" and request.url.params["chainid"] == "1" for request in requests)
     assert all(request.url.params["apikey"] == "test-key" for request in requests)
     assert requests[1].url.params["startblock"] == "0" and requests[1].url.params["offset"] == "15"
-    assert all(edge.metadata["explorer_url"].startswith("https://etherscan.io/tx/0x") for edge in result["edges"])
+    assert all(edge.explorer_url.startswith("https://etherscan.io/tx/0x") for edge in result["edges"])
 
 
 def test_empty_key_uses_public_mainnet_without_sending_key():
@@ -96,7 +97,7 @@ def test_ui_empty_key_uses_environment_key_and_v1_has_no_chainid(monkeypatch):
         seen.append(request)
         return httpx.Response(200, json={"status": "1", "result": "0" if request.url.params["action"] == "balance" else []})
 
-    instance = EtherscanClient(api_key="", transport=httpx.MockTransport(handle), mirror_db=EmptyMirror())
+    instance = EtherscanClient(api_key="", transport=httpx.MockTransport(handle), pakd_consumer=EmptyMirror())
     asyncio.run(instance.trace_real_wallet_on_etherscan(A, max_hops=1, token_filter="ETH"))
     assert all(request.url.path == "/api" and "chainid" not in request.url.params and request.url.params["apikey"] == "env-secret" for request in seen)
 
@@ -125,7 +126,7 @@ def test_both_directions_keep_actual_edge_direction_without_duplicate():
     result = run(explorer(handle), max_hops=2, token_filter="ETH", direction="BOTH")
     assert len(result["edges"]) == 2
     edge = result["edges"][0]
-    assert edge.source == "eth-" + B[2:] and edge.target == "eth-" + A[2:]
+    assert edge.source == "ethereum-" + B[2:] and edge.target == "ethereum-" + A[2:]
 
 
 def test_spoof_tokens_failed_and_unrelated_transactions_skipped():
@@ -164,7 +165,7 @@ def test_provider_errors_never_return_simulation_or_echo_key(status, payload):
 @pytest.mark.parametrize("base_url", ["http://api.etherscan.io/api", "https://evil.example/api", "https://api.etherscan.io@evil.example/api", "https://api.etherscan.io/api?apikey=secret", "https://api.etherscan.io/v2/api/redirect", "https://api.etherscan.io:444/v2/api"])
 def test_api_keys_cannot_reach_unapproved_endpoints(base_url):
     with pytest.raises(ValueError):
-        EtherscanClient(api_key="secret", base_url=base_url, mirror_db=EmptyMirror())
+        EtherscanClient(api_key="secret", base_url=base_url, pakd_consumer=EmptyMirror())
 
 
 def test_redirects_are_rejected():
@@ -180,14 +181,15 @@ def test_unbounded_or_unsupported_inputs_fail_before_http(options):
 
 def test_mirror_matches_are_read_only_and_labeled_synthetic():
     class Mirror:
-        def match_wallet_in_mirror_db(self, address):
+        logs=[]
+        async def consume_pakd_wallet_reverse_lookup_api(self, address, chain):
             return {"pakd_name": "Indodax", "user_uid": "SIM-001", "nik_masked": "3171********0001", "simulation": True} if address == B else None
 
-    instance = EtherscanClient(api_key="", transport=httpx.MockTransport(explorer(lambda action, request: "0" if action == "balance" else [native()])), mirror_db=Mirror())
+    instance = EtherscanClient(api_key="", transport=httpx.MockTransport(explorer(lambda action, request: "0" if action == "balance" else [native()])), pakd_consumer=Mirror())
     result = asyncio.run(instance.trace_real_wallet_on_etherscan(A, max_hops=1, token_filter="ETH"))
     match = result["nodes"][1]
     assert match.metadata["mirror_match"]["simulation"] is True
-    assert match.metadata["identity_source"] == "SYNTHETIC_PAKD_MIRROR_DB_SQLITE"
+    assert match.metadata["identity_source"] == "SYNTHETIC_PAKD_SCOPED_MIRROR_REST_API"
     assert match.taint_score_pct is None
 
 
@@ -201,7 +203,7 @@ def test_request_budget_and_graph_limits_are_reported():
         return [native(sender=address, recipient="0x" + f"{index:040x}", hash="0x" + f"{index:064x}") for index in range(100, 115)]
 
     result = run(explorer(handle), max_hops=3)
-    assert result["metadata"]["requests_made"] <= 24
+    assert result["metadata"]["requests_made"] <= 36
     assert len(result["nodes"]) <= 64 and len(result["edges"]) <= 128
     assert result["metadata"]["truncated"] is True
 

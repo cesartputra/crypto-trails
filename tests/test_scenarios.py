@@ -8,6 +8,8 @@ SCENARIOS = [
     ("direct-va-loopback", "120000000"),
     ("p2p-dex-cold-wallet", "250000000"),
     ("golden-period", "95000000"),
+    ("bridge-ethereum-arbitrum", "120000000"),
+    ("bridge-ethereum-bsc", "120000000"),
 ]
 
 
@@ -15,7 +17,7 @@ def amount(value):
     return Decimal(str(value))
 
 
-def test_four_complete_fna_handoff_presets(scenarios):
+def test_complete_fna_handoff_presets(scenarios):
     assert set(scenarios) == {name for name, _ in SCENARIOS}
     required = {
         "iasc_ticket_id", "fna_trail_id", "victim_pujk_name", "victim_account_number",

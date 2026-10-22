@@ -120,3 +120,48 @@ button:disabled{cursor:not-allowed}
 .mirror-error{color:#eda7b3;font-size:11px;padding:20px 0}
 @media(max-width:1200px){.command-right{gap:9px}.mirror-open{max-width:170px;font-size:8px}.live-trace-button{font-size:10px}.mode-tabs button{font-size:8px}}
 @media(max-width:700px){.command-bar{height:auto;min-height:65px;padding-top:10px;padding-bottom:10px;gap:10px;align-items:flex-start}.command-right{flex-direction:column;align-items:flex-end;gap:6px}.command-right .simulation-tag{font-size:6px;padding:4px 5px}.mirror-open{max-width:140px;font-size:7px;padding:6px 7px}.brand small{letter-spacing:1px;max-width:180px;font-size:5px;line-height:1.6}.brand b{font-size:12px}.brand-light{font-size:8px}.mode-tabs button{font-size:10px}.left-panel{max-height:680px}#live-form{margin-top:18px}#live-form label{font-size:11px}.live-options{gap:15px}.live-trace-button{font-size:12px}.quick-presets button{font-size:9px}.mirror-dialog-head{padding:17px}.mirror-disclaimer{padding:14px 17px}.mirror-content{padding:0 17px 20px}.mirror-table th,.mirror-table td{padding:9px}.mirror-table-section h3{font-size:10px}}
+
+/* Chain identity and cross-chain correlation are separate visual signals. */
+.chain-badge{text-anchor:middle;font:600 8px ui-monospace,SFMono-Regular,monospace;letter-spacing:.5px}
+.bridge-route-label{text-anchor:middle;font:8px ui-monospace,SFMono-Regular,monospace}
+.cross-chain-edge .bridge-path{stroke-width:2;stroke-dasharray:7 5;animation:bridge-travel 1.4s linear infinite;filter:drop-shadow(0 0 3px #57d8ef44)}
+.cross-chain-edge .edge-label{fill:#85e1ed;font-size:8px;font-weight:600}
+.bridge-candidate .bridge-path{stroke-dasharray:2 6;opacity:.7}
+.bridge-candidate .edge-label{fill:#a7c9d8}
+@keyframes bridge-travel{to{stroke-dashoffset:-24}}
+.api-log-card{padding:14px;margin:12px 0;border:1px solid #2e4b60;border-radius:6px;background:#10233455}
+.api-log-head{display:flex;align-items:center;justify-content:space-between;gap:12px;font-size:11px;margin-bottom:10px;color:#b7d4e3}
+.api-log-head span{font:10px ui-monospace,monospace;color:#83b4c4;white-space:nowrap}
+.api-endpoint{display:block;font:10px ui-monospace,monospace;color:#84cad8;overflow-wrap:anywhere;line-height:1.7}
+.api-fields,.mirror-note{font-size:10px;color:#829bb5;line-height:1.8;overflow-wrap:anywhere}
+.api-json{border-top:1px solid #294054;margin-top:10px;padding-top:10px}
+.api-json summary{font-size:10px;color:#9db9d1;cursor:pointer}
+.api-json pre{font:10px/1.8 ui-monospace,SFMono-Regular,monospace;color:#afc9de;white-space:pre-wrap;overflow-wrap:anywhere;max-height:330px;overflow:auto;padding:10px;background:#081523;border-radius:4px}
+.scope-comparison td{white-space:normal;overflow-wrap:anywhere}.scope-comparison .scope-included{color:#88d9b6}.scope-comparison .scope-excluded{color:#d5b97e}
+.mirror-open{max-width:240px}.mode-tabs button{font-size:8px}.mirror-dialog-head h2{font-size:19px}
+@media(prefers-reduced-motion:reduce){.cross-chain-edge .bridge-path{animation:none}}
+@media(max-width:700px){.mirror-open{max-width:180px;font-size:7px}.mode-tabs button{font-size:9px}.mirror-dialog-head h2{font-size:15px}}
+
+/* Light surfaces and contrast cover cards, inputs, SVG labels, and inspectors. */
+:root[data-theme="light"]{color-scheme:light;--bg:#edf2f7;--panel:#fff;--border:#cbd5e1;--muted:#52637a;--text:#172b43;--cyan:#08788b;--blue:#175db0;--amber:#9a5a08;--purple:#6742b7;--green:#14734f;--red:#b13643}
+[data-theme="light"] body{background:#edf2f7}
+[data-theme="light"] .command-bar,[data-theme="light"] .panel,[data-theme="light"] .graph-board,[data-theme="light"] .graph-scroll,[data-theme="light"] dialog{background:#fff;color:var(--text)}
+[data-theme="light"] .metric,[data-theme="light"] .scenario-card,[data-theme="light"] .button,[data-theme="light"] .icon-button,[data-theme="light"] .mode-tabs button,[data-theme="light"] .wallet-presets button,[data-theme="light"] .api-call-card,[data-theme="light"] .mirror-table th,[data-theme="light"] .mirror-table td,[data-theme="light"] .innovation-zone{background:#f5f8fc;color:var(--text);border-color:var(--border)}
+[data-theme="light"] input,[data-theme="light"] select,[data-theme="light"] textarea,[data-theme="light"] pre{background:#f5f8fc;color:#18324d;border-color:#b7c6d8}
+[data-theme="light"] .scenario-card.active,[data-theme="light"] .mode-tabs button[aria-selected="true"]{background:#dceff4;border-color:#248a9f;color:#11394c}
+[data-theme="light"] .scenario-copy strong,[data-theme="light"] .brand-light,[data-theme="light"] .metric-label,[data-theme="light"] label,[data-theme="light"] .section-caption,[data-theme="light"] .detail-list dt,[data-theme="light"] .case-indicator{color:#41566f}
+[data-theme="light"] .node-label,[data-theme="light"] .edge-label{fill:#243e5b;paint-order:stroke;stroke:#fff;stroke-width:3px;stroke-linejoin:round}
+[data-theme="light"] .node-sub,[data-theme="light"] .node-address,[data-theme="light"] .taint-label{fill:#475d78}
+[data-theme="light"] .graph-watermark{opacity:.1;color:#536c86}
+[data-theme="light"] .button.primary{background:#146e83;color:white;border-color:#146e83}
+[data-theme="light"] .warnings,[data-theme="light"] #warnings{background:#fff7e4;color:#765015;border-color:#e0ca98}
+[data-theme="light"] .inspector,[data-theme="light"] .action-card,[data-theme="light"] .evidence-card,[data-theme="light"] .pakd-card{background:#fff;color:#172b43}
+.theme-toggle{white-space:nowrap;min-width:74px}
+[data-theme="light"] .detail-list dd,[data-theme="light"] .detail-list div,[data-theme="light"] .inspector-entity,[data-theme="light"] .pakd-name,[data-theme="light"] .governance-card,[data-theme="light"] .live-title,[data-theme="light"] .api-log-head,[data-theme="light"] .mirror-table-section h3{color:#28445f}
+[data-theme="light"] .node-subtitle{fill:#40546d;stroke:#fff;stroke-width:2.5px;paint-order:stroke;text-shadow:none}
+[data-theme="light"] .mode-tabs,[data-theme="light"] .innovation-zone,[data-theme="light"] .graph-footer,[data-theme="light"] .mirror-dialog-head,[data-theme="light"] .api-log-card,[data-theme="light"] .governance-card,[data-theme="light"] .manual-button,[data-theme="light"] .quick-presets button{background:#f0f5fa;color:#28445f;border-color:#c4d1df}
+[data-theme="light"] .scope-included{color:#17613f}[data-theme="light"] .scope-excluded{color:#80551b}
+[data-theme="light"] .detail-value,[data-theme="light"] .api-endpoint,[data-theme="light"] .api-fields,[data-theme="light"] .api-json summary,[data-theme="light"] .mirror-note,[data-theme="light"] .scope-note,[data-theme="light"] .pakd-intake,[data-theme="light"] .inspector-type,[data-theme="light"] .form-note{color:#465d75}
+[data-theme="light"] .detail-highlight,[data-theme="light"] .explorer-link{color:#14657b}
+[data-theme="light"] .mirror-disclaimer{background:#fff3d5;color:#6b4c16;border-color:#e1cea5}
+[data-theme="light"] .rail-guide span{background:#eff4f9;color:#40536a}[data-theme="light"] .rail-guide span b{color:#324b66}

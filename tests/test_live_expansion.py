@@ -11,7 +11,7 @@ TX = '0x' + '12' * 32
 
 def mock_engine(monkeypatch):
     calls = []
-    async def engine(self, seed_wallet_address, max_hops=2, token_filter='ALL', direction='OUTBOUND'):
+    async def engine(self, seed_wallet_address, max_hops=2, token_filter='ALL', direction='OUTBOUND', source_chain='ETHEREUM', auto_scan_cross_chain=False):
         calls.append((seed_wallet_address, max_hops, token_filter, direction, self.api_key))
         return {'nodes': [
             TrailNode(id='seed', label='Seed', node_zone='ONCHAIN_WALLET', node_type='LIVE_WALLET', address=seed_wallet_address,

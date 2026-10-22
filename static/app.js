@@ -7,8 +7,8 @@ const idr = (value) => new Intl.NumberFormat("id-ID", { style: "currency", curre
 const number = (value, digits = 2) => new Intl.NumberFormat("id-ID", { maximumFractionDigits: digits }).format(Number(value || 0));
 const short = (value, size = 20) => String(value || "").length > size ? `${String(value).slice(0, size - 2)}…` : String(value || "");
 const friendly = (value) => String(value || "").replaceAll("_", " ");
-const titles = ["P2P full-cycle", "Direct VA & loopback", "DEX & cold wallet", "Golden period"];
-const subtitles = ["Deposit → on-chain → cash-out", "Tokocrypto → wallet → Indodax", "PAKD → Uniswap → issuer review", "Escrow tersisa · keputusan institusi"];
+const titles = ["P2P full-cycle", "Direct VA & loopback", "DEX & cold wallet", "Golden period", "Bridge ETH → Arbitrum", "Bridge ETH → BSC"];
+const subtitles = ["Deposit → on-chain → cash-out", "Tokocrypto → wallet → Indodax", "PAKD → Uniswap → issuer review", "Escrow tersisa · keputusan institusi", "Stargate → Indodax API", "Celer → Reku API"];
 let toastTimer;
 
 function el(tag, className, text) {
@@ -65,6 +65,7 @@ function download(name, value) {
 }
 
 function drawScenarios() {
+  $("#scenario-count").textContent = `${state.scenarios.length} KASUS`;
   $("#scenarios").replaceChildren(...state.scenarios.map((scenario, index) => {
     const button = el("button", `scenario-card${state.scenarioId === scenario.id ? " active" : ""}`);
     button.type = "button";
@@ -128,7 +129,7 @@ function beginTrace(live = false) {
   $("#metric-crypto").textContent = "Menunggu bukti penelusuran";
   $("#metric-recovery-note").textContent = live ? "Tidak dihitung dari transaksi publik" : "Estimasi skenario sintetis";
   $("#metric-confirmed-note").textContent = "Menunggu bukti dan keputusan institusi";
-  $("#graph-loading strong").textContent = live ? "Mengambil transaksi asli Ethereum" : "Menyusun jejak aliran dana";
+  $("#graph-loading strong").textContent = live ? "Mengambil transaksi multichain asli" : "Menyusun jejak aliran dana";
   $("#graph-loading span").textContent = live ? "Explorer mainnet · permintaan dibatasi untuk menjaga rate limit…" : "Mencocokkan handoff FNA dengan Mirror DB dan on-chain…";
   state.logs = []; $("#activity-log").replaceChildren();
   renderInspector(); renderEvidence(); renderPakd(); renderActions();
@@ -146,7 +147,7 @@ function acceptGraph(graph) {
   else if (graph.nodes.length) selectNode(graph.nodes.find((node) => node.metadata?.is_seed_wallet || node.metadata?.is_initial_wallet || /SEED|INITIAL/.test(node.node_type))?.id || graph.nodes[0].id);
   else renderInspector();
   const live = graph.simulation === false;
-  log(`${graph.nodes.length} simpul dan ${graph.edges.length} relasi terhubung. ${live ? "Data on-chain mainnet asli; atribusi dana laporan belum terbukti." : "Sumber: snapshot FNA, SQL Mirror DB PAKD, dan on-chain sintetis."}`);
+  log(`${graph.nodes.length} simpul dan ${graph.edges.length} relasi terhubung. ${live ? "Data on-chain mainnet asli; atribusi dana laporan belum terbukti." : "Sumber: snapshot FNA, REST API PAKD, dan on-chain sintetis."}`);
   if (graph.p2p_detections?.length) log(`${graph.p2p_detections.length} kecocokan escrow P2P ditemukan pada fixture.`);
   const warnings = graph.warnings || [];
   $("#warnings").textContent = warnings.join(" · ");
@@ -186,7 +187,7 @@ async function traceLive() {
   const form = $("#live-form");
   $("#live-wallet").value = $("#live-wallet").value.trim();
   if (!form.reportValidity()) return;
-  const payload = { wallet_address: $("#live-wallet").value, max_hops: Number($("#live-hops").value), token_filter: $("#live-token").value, direction: "OUTBOUND", simulate_fna_and_mirror_origin: $("#live-origin").checked };
+  const payload = { wallet_address: $("#live-wallet").value, max_hops: Number($("#live-hops").value), token_filter: $("#live-token").value, direction: "OUTBOUND", simulate_fna_and_mirror_origin: $("#live-origin").checked, source_chain: $("#live-chain").value, auto_scan_cross_chain: $("#live-cross-chain").checked };
   const key = $("#live-api-key").value.trim();
   if (key) payload.etherscan_api_key = key;
   $("#live-api-key").value = "";
@@ -196,8 +197,8 @@ async function traceLive() {
     const graph = await api("/api/v1/trail/live-etherscan", { method: "POST", body: JSON.stringify(payload) });
     if (requestId !== state.request) return;
     acceptGraph(graph);
-    const provider = graph.live_metadata?.provider || graph.live_metadata?.data_provider || "Explorer Ethereum Mainnet";
-    $("#live-status").textContent = `${provider}: ${graph.edges.filter(isLiveRecord).length} transfer asli ditampilkan. Tautan Etherscan tersedia pada detail wallet/transaksi.`;
+    const provider = graph.live_metadata?.provider || graph.live_metadata?.data_provider || "Explorer Multichain";
+    $("#live-status").textContent = `${provider}: ${graph.edges.filter(isLiveTransfer).length} transfer asli ditampilkan. Tautan explorer menyesuaikan chain. Kandidat pivot ditandai terpisah.`;
   } catch (error) {
     if (requestId !== state.request) return;
     failTrace(error, true);
@@ -210,11 +211,35 @@ function isLiveRecord(record) {
   return record?.metadata?.simulation === false || record?.metadata?.is_live === true || (/ETHERSCAN|BLOCKSCOUT|MAINNET/.test(source) && !/SIMULAT|FIXTURE|SEEDED/.test(source));
 }
 
-function explorerLink(kind, value, label) {
-  const pattern = kind === "address" ? /^0x[a-fA-F0-9]{40}$/ : /^0x[a-fA-F0-9]{64}$/;
+const chains = {
+  ETHEREUM: { badge: "ETH", color: "#ad93ff", host: "etherscan.io", id: 1 },
+  BSC: { badge: "BSC", color: "#efcf65", host: "bscscan.com", id: 56 },
+  POLYGON: { badge: "POLY", color: "#bc8cff", host: "polygonscan.com", id: 137 },
+  ARBITRUM: { badge: "ARB", color: "#6eb9f6", host: "arbiscan.io", id: 42161 },
+  OPTIMISM: { badge: "OP", color: "#f38193", host: "optimistic.etherscan.io", id: 10 },
+  BASE: { badge: "BASE", color: "#6b99ff", host: "basescan.org", id: 8453 },
+  TRON: { badge: "TRON", color: "#f39185", host: "tronscan.org", id: null },
+};
+function chainName(value) {
+  return ({ ETHEREUM_ERC20: "ETHEREUM", BSC_BEP20: "BSC", TRON_TRC20: "TRON" })[value] || value || "ETHEREUM";
+}
+function chainInfo(record) { return chains[chainName(typeof record === "string" ? record : record?.chain || record?.metadata?.chain)] || null; }
+function isCandidateEdge(record) {
+  return /CANDIDATE|UNVERIFIED/.test(String(record?.metadata?.correlation_status || "")) || record?.metadata?.is_candidate === true || /CANDIDATE/.test(record?.edge_type || "") || (record?.edge_type === "CROSS_CHAIN_BRIDGE" && isLiveRecord(record) && record?.metadata?.bridge_link_verified !== true);
+}
+function isBridgeEdge(record) { return /CROSS_CHAIN|BRIDGE_PIVOT/.test(record?.edge_type || ""); }
+function isLiveTransfer(record) { return isLiveRecord(record) && !isCandidateEdge(record) && !isBridgeEdge(record) && /^0x[a-fA-F0-9]{64}$/.test(record?.tx_hash || ""); }
+function explorerLink(kind, value, label, record = {}) {
+  const name = chainName(record.chain || record.metadata?.chain), config = chains[name];
+  if (!config) return null;
+  const pattern = name === "TRON" ? kind === "address" ? /^T[A-Za-z0-9]{20,99}$/ : /^(?:0x)?[a-fA-F0-9]{64}$/ : kind === "address" ? /^0x[a-fA-F0-9]{40}$/ : /^0x[a-fA-F0-9]{64}$/;
   if (!pattern.test(value || "")) return null;
-  const link = el("a", "explorer-link", label || `↗ Lihat ${kind === "address" ? "wallet" : "transaksi"} di Etherscan`);
-  link.href = `https://etherscan.io/${kind}/${value}`;
+  const expected = name === "TRON" ? `https://${config.host}/#/${kind === "tx" ? "transaction" : "address"}/${value}` : `https://${config.host}/${kind}/${value}`;
+  if (record.explorer_url) {
+    try { const supplied = new URL(record.explorer_url); if (supplied.href.toLowerCase() !== expected.toLowerCase() || supplied.username || supplied.password) return null; } catch { return null; }
+  }
+  const link = el("a", "explorer-link", label || `↗ Lihat ${kind === "address" ? "wallet" : "transaksi"} di ${config.host}`);
+  link.href = record.explorer_url || expected;
   link.target = "_blank";
   link.rel = "noopener noreferrer";
   return link;
@@ -223,14 +248,14 @@ function explorerLink(kind, value, label) {
 function renderMetrics() {
   const graph = state.graph;
   const live = graph.simulation === false;
-  $("#source-tag").textContent = live ? "LIVE · ETHEREUM MAINNET" : "LAB · SIMULASI";
+  $("#source-tag").textContent = live ? "LIVE · MULTICHAIN" : "LAB · SIMULASI";
   $("#source-tag").classList.toggle("is-live", live);
   $("#case-id").textContent = live ? `LIVE MAINNET · ${short(graph.trace_id, 15)}` : `${graph.iasc_ticket_id} · ${graph.fna_trail_id}`;
   $("#metric-loss-label").textContent = live ? "WALLET TERAMATI" : "TOTAL KERUGIAN";
   $("#metric-loss").textContent = live ? String(graph.nodes.filter((node) => node.node_zone === "ONCHAIN_WALLET").length) : idr(graph.total_scam_idr);
   $("#metric-loss-note").textContent = live ? "Alamat pada sampel mainnet" : "Nilai laporan korban";
   $("#metric-traced-label").textContent = live ? "TRANSFER MAINNET" : "DANA TERLACAK";
-  $("#metric-traced").textContent = live ? String(graph.edges.filter(isLiveRecord).length) : idr(graph.total_traced_idr);
+  $("#metric-traced").textContent = live ? String(graph.edges.filter(isLiveTransfer).length) : idr(graph.total_traced_idr);
   $("#metric-crypto").textContent = live ? `${graph.live_metadata?.provider || "Explorer publik"} · sampel terbatas` : `${number(graph.total_traced_usdt)} USDT · ekuivalen demo`;
   $("#metric-hops").replaceChildren(document.createTextNode(`${graph.hop_count ?? graph.edges.length} `), el("em", "", "hop"));
   const pct = Number(graph.total_scam_idr) > 0 ? Math.min(100, Number(graph.recoverable_amount_idr) / Number(graph.total_scam_idr) * 100) : 0;
@@ -246,12 +271,13 @@ function renderMetrics() {
 
 function nodeTheme(node) {
   const type = String(node.node_type || "").toUpperCase();
-  if (node.node_zone === "ONCHAIN_WALLET") return { color: "#ad93ff", dark: "#231d3d", icon: type.includes("DEX") ? "⇄" : type.includes("DEPOSIT") ? "▥" : type.includes("BRIDGE") ? "⇆" : "◇", marker: "purple" };
+  if (node.is_bridge_node || /BRIDGE_PROTOCOL|BRIDGE_CONTRACT/.test(type)) return { color: "#57d8ef", dark: "#12323d", icon: "🌉", marker: "cyan" };
+  if (node.node_zone === "ONCHAIN_WALLET") return { color: chainInfo(node)?.color || "#ad93ff", dark: "#231d3d", icon: type.includes("DEX") ? "⇄" : type.includes("DEPOSIT") ? "▥" : type.includes("BRIDGE") ? "⇆" : "◇", marker: "purple" };
   if (node.node_zone === "CRYPTO_EXCHANGE_BRIDGE") return { color: "#efb75f", dark: "#342a1c", icon: /MERCHANT|ESCROW/.test(type) ? "↔" : "▥", marker: "amber" };
   return { color: "#579afa", dark: "#16283f", icon: /VICTIM/.test(type) ? "○" : /MERCHANT/.test(type) ? "↔" : "▣", marker: "blue" };
 }
 
-const zoneLabels = { FIAT_BANK: "Zona 1 · FNA’s Money Trails / PUJK", CRYPTO_EXCHANGE_BRIDGE: "Zona 2 · PAKD Mirror DB", ONCHAIN_WALLET: "Zona 3 · Etherscan On-Chain Trails" };
+const zoneLabels = { FIAT_BANK: "Zona 1 · FNA’s Money Trails / PUJK", CRYPTO_EXCHANGE_BRIDGE: "Zona 2 · PAKD Scoped Mirror API", ONCHAIN_WALLET: "Zona 3 · Multichain & Bridge Trails" };
 
 function decisionForNode(node) {
   const requests = (state.graph?.governance_requests || []).filter((request) => request.target_node_id === node.id);
@@ -354,12 +380,14 @@ function renderGraph() {
     const fromNode = state.graph.nodes.find((node) => node.id === edge.source);
     const toNode = state.graph.nodes.find((node) => node.id === edge.target);
     const escrow = /ESCROW|SETTLEMENT/.test(edge.edge_type || "");
-    const theme = nodeTheme(escrow ? { node_zone: "CRYPTO_EXCHANGE_BRIDGE" } : fromNode?.node_zone === "ONCHAIN_WALLET" ? fromNode : toNode);
-    const group = svgEl("g", { class: `edge-group${state.selectedEdge === edge.id ? " selected" : ""}`, "data-edge-id": edge.id, "data-source": edge.source, "data-target": edge.target, tabindex: 0, role: "button", "aria-label": `Inspeksi transaksi ${edge.label || edge.asset || edge.id}`, "aria-pressed": String(state.selectedEdge === edge.id) });
+    const crossChain = isBridgeEdge(edge);
+    const candidate = isCandidateEdge(edge);
+    const theme = crossChain ? {color:"#57d8ef",marker:"cyan"} : nodeTheme(escrow ? { node_zone: "CRYPTO_EXCHANGE_BRIDGE" } : fromNode?.node_zone === "ONCHAIN_WALLET" ? fromNode : toNode);
+    const group = svgEl("g", { class: `edge-group${crossChain ? " cross-chain-edge" : ""}${candidate ? " bridge-candidate" : ""}${state.selectedEdge === edge.id ? " selected" : ""}`, "data-edge-id": edge.id, "data-source": edge.source, "data-target": edge.target, tabindex: 0, role: "button", "aria-label": `Inspeksi transaksi ${edge.label || edge.asset || edge.id}`, "aria-pressed": String(state.selectedEdge === edge.id) });
     const siblings = parallelEdges.get(JSON.stringify([edge.source, edge.target]));
     const { path, labelX, labelY } = edgeGeometry(source, target, siblings.indexOf(edge.id), siblings.length);
-    const line = svgEl("path", { class: `graph-edge${escrow ? " escrow" : ""}`, d: path, stroke: theme.color, "marker-end": `url(#arrow-${theme.marker})` });
-    const label = edge.crypto_amount != null && Number(edge.crypto_amount) > 0 ? `${number(edge.crypto_amount, 4)} ${edge.asset || "USDT"}` : Number(edge.amount_idr) > 0 ? compactIdr(edge.amount_idr) : short(edge.label || friendly(edge.edge_type), 20);
+    const line = svgEl("path", { class: `graph-edge${crossChain ? " bridge-path" : ""}${escrow ? " escrow" : ""}`, d: path, stroke: theme.color, "marker-end": `url(#arrow-${theme.marker})` });
+    const label = crossChain ? `${candidate ? "KANDIDAT" : "BRIDGE"}: ${chainInfo(edge.bridged_from_chain)?.badge || chainInfo(fromNode)?.badge || "?"} → ${chainInfo(edge.bridged_to_chain)?.badge || chainInfo(toNode)?.badge || "?"}` : edge.crypto_amount != null && Number(edge.crypto_amount) > 0 ? `${number(edge.crypto_amount, 4)} ${edge.asset || "USDT"}` : Number(edge.amount_idr) > 0 ? compactIdr(edge.amount_idr) : short(edge.label || friendly(edge.edge_type), 20);
     const text = svgEl("text", { class: `edge-label${escrow ? " escrow" : ""}`, x: labelX, y: labelY }, label);
     const hit = svgEl("path", { class: "edge-hit", d: path });
     group.append(hit, line, text, svgEl("title", {}, `${edge.label || friendly(edge.edge_type)}${edge.tx_hash ? ` · ${edge.tx_hash}` : ""}`));
@@ -372,6 +400,7 @@ function renderGraph() {
     const { x, y } = state.positions.get(node.id);
     const theme = nodeTheme(node);
     const selected = node.id === state.selected;
+    const chain = chainInfo(node);
     const initial = /INITIAL/i.test(node.node_type || "") || node.metadata?.is_initial_wallet;
     const decision = decisionForNode(node);
     const decisionTheme = decisionStyle(decision);
@@ -390,6 +419,11 @@ function renderGraph() {
       group.append(svgEl("rect", { x: -49, y: badgeY, width: 98, height: 17, rx: 4, fill: "#101b2a", stroke: decisionTheme.color, "stroke-width": .6 }));
       group.append(svgEl("text", { class: "decision-node-badge", x: 0, y: badgeY + 11.5, fill: decisionTheme.color }, decisionTheme.short));
     }
+    if (node.node_zone === "ONCHAIN_WALLET" && chain) {
+      group.append(svgEl("rect", {class:"chain-badge-bg",x:17,y:-42,width:44,height:16,rx:4,fill:"#0b1827",stroke:chain.color,"stroke-width":.7}));
+      group.append(svgEl("text", {class:"chain-badge",x:39,y:-31,fill:chain.color},chain.badge));
+    }
+    if (node.is_bridge_node && node.bridged_to_chain) group.append(svgEl("text", {class:"bridge-route-label",y:99,fill:"#81e1ed"}, `${chainInfo(node.bridged_from_chain || node.chain)?.badge || "?"} → ${chainInfo(node.bridged_to_chain)?.badge || "?"}`));
     group.append(svgEl("text", { class: "node-label", y: 54 }, short(node.label, state.labelLength)));
     const subtitle = node.address ? short(node.address, 18) : node.account ? short(node.account, 18) : short(node.entity_label || friendly(node.node_type), 24);
     group.append(svgEl("text", { class: "node-subtitle", y: 70 }, subtitle));
@@ -475,6 +509,12 @@ function renderInspector() {
   const edge = state.graph?.edges.find((candidate) => candidate.id === state.selectedEdge);
   if (edge) {
     const details = el("dl", "detail-list");
+    addDetail(details, "Jaringan", `${edge.chain || edge.metadata?.chain || "—"}${edge.chain_id ? ` [${edge.chain_id}]` : ""}`);
+    addDetail(details, "Bridge protocol", edge.bridge_protocol_name);
+    if (isBridgeEdge(edge)) {
+      addDetail(details, "Pivot lintas chain", `${edge.bridged_from_chain || "?"} → ${edge.bridged_to_chain || "?"}`);
+      addDetail(details, "Status hubungan dana", isCandidateEdge(edge) ? "KANDIDAT KORELASI · alamat/waktu berdekatan, belum membuktikan satu perpindahan dana" : "Alur bridge sintetis pada skenario demo");
+    }
     addDetail(details, "Sumber data", edge.metadata?.evidence_source || "Fixture skenario sintetis");
     addDetail(details, "Dari", state.graph.nodes.find((node) => node.id === edge.source)?.address || edge.source, "mono");
     addDetail(details, "Ke", state.graph.nodes.find((node) => node.id === edge.target)?.address || edge.target, "mono");
@@ -482,9 +522,17 @@ function renderInspector() {
     addDetail(details, "Waktu · WIB", edge.timestamp ? dateTime(edge.timestamp) : null);
     addDetail(details, "TX hash", edge.tx_hash, "mono");
     addDetail(details, "Kontrak token", edge.metadata?.token_contract || edge.metadata?.contract_address, "mono");
-    inspector.replaceChildren(el("div", "inspector-type", "DETAIL TRANSAKSI"), el("h3", "", edge.label || friendly(edge.edge_type)), el("p", "inspector-entity", isLiveRecord(edge) ? "Transaksi publik Ethereum Mainnet asli · atribusi belum terbukti" : "Bukti sintetis untuk demonstrasi"), details);
-    const link = isLiveRecord(edge) ? explorerLink("tx", edge.tx_hash) : null;
+    inspector.replaceChildren(el("div", "inspector-type", "DETAIL TRANSAKSI"), el("h3", "", edge.label || friendly(edge.edge_type)), el("p", "inspector-entity", isCandidateEdge(edge) ? "Kandidat pivot lintas chain · belum terkonfirmasi" : isLiveRecord(edge) ? "Transaksi publik multichain asli · atribusi belum terbukti" : "Bukti sintetis untuk demonstrasi"), details);
+    const link = isLiveRecord(edge) ? explorerLink("tx", edge.tx_hash, undefined, edge) : null;
     if (link) inspector.append(link);
+    if (isCandidateEdge(edge)) {
+      for (const side of ["source", "destination"]) {
+        const chain = edge[side === "source" ? "bridged_from_chain" : "bridged_to_chain"];
+        const hash = edge.metadata?.[`${side}_tx_hash`];
+        const evidence = explorerLink("tx",hash,`↗ Bukti ${side === "source" ? "chain asal" : "chain tujuan"}`,{chain,explorer_url:edge.metadata?.[`${side}_explorer_url`]});
+        if (evidence) inspector.append(evidence);
+      }
+    }
     return;
   }
   const node = state.graph?.nodes.find((candidate) => candidate.id === state.selected);
@@ -501,12 +549,15 @@ function renderInspector() {
   const entity = el("p", "inspector-entity", node.entity_label || friendly(node.node_zone));
   const decision = decisionForNode(node);
   const decisionTheme = decisionStyle(decision);
-  const status = el("span", `status-pill decision-${decisionTheme.className}`, decision ? `${decisionTheme.icon} ${decisionTheme.label}` : isLiveRecord(node) ? "● DATA PUBLIK ETHEREUM MAINNET" : "● Bukti sintetis · untuk peninjauan");
+  const status = el("span", `status-pill decision-${decisionTheme.className}`, decision ? `${decisionTheme.icon} ${decisionTheme.label}` : isLiveRecord(node) ? "● DATA PUBLIK MULTICHAIN" : "● Bukti sintetis · untuk peninjauan");
   const details = el("dl", "detail-list");
   addDetail(details, "Zona arsitektur", zoneLabels[node.node_zone]);
   addDetail(details, "Rekening / akun", node.account, "mono");
   addDetail(details, "Alamat blockchain", node.address, "mono");
-  addDetail(details, "Jaringan", node.chain);
+  addDetail(details, "Jaringan", `${node.chain || "—"}${node.chain_id ? ` [${node.chain_id}]` : ""}`);
+  addDetail(details, "Bridge protocol", node.bridge_protocol_name);
+  if (node.is_bridge_node) addDetail(details, "Jalur bridge", `${node.bridged_from_chain || node.chain || "?"} → ${node.bridged_to_chain || "belum diketahui"}`);
+  if (node.metadata?.discovery === "SAME_ADDRESS_ACTIVITY_ONLY") addDetail(details, "Korelasi lintas chain", "Aktivitas alamat yang sama; belum ada bukti perpindahan dana/bridge antar-chain.");
   addDetail(details, "Nominal terkait", Number(node.amount_idr) > 0 ? idr(node.amount_idr) : null);
   addDetail(details, "Sisa saldo teramati", node.metadata?.balance_status === "NOT_FETCHED" ? "Belum diambil" : node.asset && node.balance_crypto != null ? `${number(node.balance_crypto, 4)} ${node.asset}` : null, "detail-highlight");
   addDetail(details, "Jumlah aset", node.asset && Number(node.crypto_amount) > 0 ? `${number(node.crypto_amount, 4)} ${node.asset}` : null);
@@ -531,13 +582,13 @@ function renderInspector() {
   }
   const mirror = metadata.mirror_deposit || metadata.mirror_match || metadata.mirror_lookup;
   if (mirror) {
-    addDetail(details, "Kueri SQL Mirror DB", mirror.sql_query || (node.node_zone === "CRYPTO_EXCHANGE_BRIDGE" ? "mirror_pakd_users JOIN mirror_pakd_fiat_deposits JOIN mirror_pakd_withdrawals" : "mirror_pakd_wallets JOIN mirror_pakd_users"), "mono");
-    addDetail(details, "Sumber identitas", "SQLite seed sintetis · kecocokan teknis, bukan identitas pemilik live terverifikasi");
-    addDetail(details, "PAKD", mirror.pakd_name);
+    addDetail(details, "Akses data PAKD", "REST API Consumer → PAKD Scoped Mirror API; SQL hanya di provider PAKD");
+    addDetail(details, "Sumber identitas", "Respons API PAKD sintetis · kecocokan teknis, bukan identitas pemilik live terverifikasi");
+    addDetail(details, "PAKD", mirror.pakd_name || mirror.pakd_code);
     addDetail(details, "UID PAKD", mirror.user_uid || mirror.pakd_user_uid, "mono");
     addDetail(details, "NIK tersamarkan", mirror.nik_masked || mirror.kyc_nik_masked, "mono");
-    addDetail(details, "Nama sintetis", mirror.full_name);
-    addDetail(details, "Waktu deposit VA · WIB", mirror.deposit_timestamp ? dateTime(mirror.deposit_timestamp) : null);
+    addDetail(details, "Nama sintetis", mirror.kyc_name_masked);
+    addDetail(details, "Waktu deposit VA · WIB", (mirror.inflow_timestamp || mirror.deposit_timestamp) ? dateTime(mirror.inflow_timestamp || mirror.deposit_timestamp) : null);
     addDetail(details, "Wallet terdaftar", mirror.initial_wallet_address || mirror.wallet_address, "mono");
     addDetail(details, "Tipe wallet mirror", mirror.wallet_type);
   }
@@ -555,10 +606,10 @@ function renderInspector() {
   }
   inspector.replaceChildren(type, heading, entity, status, details);
   if (isLiveRecord(node)) {
-    const link = explorerLink("address", node.address);
+    const link = explorerLink("address", node.address, undefined, node);
     if (link) inspector.append(link);
     for (const edge of incoming.filter(isLiveRecord).slice(0, 5)) {
-      const txLink = explorerLink("tx", edge.tx_hash, `↗ TX ${short(edge.tx_hash, 22)}`);
+      const txLink = explorerLink("tx", edge.tx_hash, `↗ TX ${short(edge.tx_hash, 22)}`, edge);
       if (txLink) inspector.append(txLink);
     }
     addDetail(details, "Atribusi dana laporan", "Belum terbukti · transfer publik bukan ukuran kerugian/recovery");
@@ -862,26 +913,53 @@ for (const mode of ["scenario", "live"]) {
 }
 for (const button of document.querySelectorAll("[data-wallet]")) button.addEventListener("click", () => { $("#live-wallet").value = button.dataset.wallet; $("#live-wallet").focus(); });
 
+function apiLogCard(entry) {
+  const card = el("article", "api-log-card");
+  const top = el("div", "api-log-head");
+  top.append(el("strong", "", `${entry.pakd_code || "PAKD"} · HTTP ${entry.response_status_code ?? "—"}`),el("span", "", `${number(entry.latency_ms, 2)} ms`));
+  card.append(top,el("code", "api-endpoint",entry.endpoint_url || "Endpoint tidak tersedia"));
+  card.append(el("p", "api-fields", `Scoped fields: ${(entry.scoped_fields_returned || []).join(", ") || "Tidak ada record"}`));
+  for (const [label,value] of [["Request JSON",entry.request_payload],["Response JSON · scoped",entry.response_payload]]) {
+    const details = el("details", "api-json");
+    details.append(el("summary", "",label),el("pre", "",JSON.stringify(value ?? {},null,2).slice(0,12000)));
+    card.append(details);
+  }
+  return card;
+}
+
 async function openMirrorDb() {
   const dialog = $("#mirror-dialog");
   if (!dialog.open) dialog.showModal();
   const content = $("#mirror-content");
-  content.replaceChildren(el("p", "muted small", "Membaca tabel SQLite…"));
+  content.replaceChildren(el("p", "muted small", "Mengonsumsi API schema PAKD…"));
   try {
     const preview = await api("/api/v1/mirror-db/records");
+    const logSection = el("section", "mirror-table-section");
+    const logs = state.graph?.pakd_api_exchange_logs || preview.pakd_api_exchange_logs || [];
+    logSection.append(el("h3", "", `Log konsumsi REST API PAKD · ${logs.length} panggilan pada trace aktif`),el("p", "mirror-note", "Aplikasi OJK adalah API consumer. Demo menggunakan HTTP ASGI lokal; Scoped Mirror DB hanya dibaca oleh server provider PAKD."));
+    if (logs.length) logSection.append(...logs.slice(-80).map(apiLogCard));
+    else logSection.append(el("p", "muted small", "Jalankan skenario atau live trace untuk melihat request/response PAKD. Tidak ada log perkara global yang dicampur."));
+    const filtering = el("section", "mirror-table-section");
+    filtering.append(el("h3", "", "Data filtering · Scoped Mirror DB vs Main DB PAKD"));
+    const comparison = el("table", "mirror-table scope-comparison"), head = el("thead"), header = el("tr"), body = el("tbody");
+    for (const title of ["Field", "Ruang lingkup", "Status"]) header.append(el("th", "",title));
+    head.append(header);
+    const included = preview.included_scoped_fields || Object.fromEntries(Object.entries(preview.tables || {}).map(([name,rows])=>[name,[...new Set(rows.flatMap(row=>Object.keys(row)))]]));
+    for (const [table,fields] of Object.entries(included)) for (const field of fields) { const row = el("tr"); row.append(el("td", "",field),el("td", "",table),el("td", "scope-included","✅ Disertakan di Scoped Mirror"));body.append(row); }
+    for (const field of preview.excluded_internal_pakd_fields || []) { const row = el("tr");row.append(el("td", "",field),el("td", "","Main DB PAKD · nilai tidak diakses"),el("td", "scope-excluded","🔒 Tidak disinkronkan"));body.append(row); }
+    comparison.append(head,body);const scroll = el("div", "mirror-table-scroll");scroll.append(comparison);filtering.append(scroll,el("p", "mirror-note", "Minimisasi field adalah rancangan kontrol data. Kebijakan akses, dasar pemrosesan dan kepatuhan operasional tetap memerlukan verifikasi institusi."));
     const sections = Object.entries(preview.tables || {}).map(([name, rows]) => {
       const section = el("section", "mirror-table-section");
-      section.append(el("h3", "", `${name} · ${rows.length} baris`));
+      section.append(el("h3", "", `${name} · ${rows.length} rekaman scoped sintetis`));
       if (!rows.length) { section.append(el("p", "muted small", "Tabel kosong.")); return section; }
-      const columns = [...new Set(rows.flatMap((row) => Object.keys(row)))];
+      const columns = included[name] || [...new Set(rows.flatMap((row) => Object.keys(row)))];
       const scroll = el("div", "mirror-table-scroll"), table = el("table", "mirror-table"), head = el("thead"), heading = el("tr"), body = el("tbody");
       for (const key of columns) { const cell = el("th", "", key); cell.scope = "col"; heading.append(cell); }
       head.append(heading);
       for (const row of rows) { const tr = el("tr"); for (const key of columns) tr.append(el("td", "", row[key] == null ? "—" : typeof row[key] === "object" ? JSON.stringify(row[key]) : String(row[key]))); body.append(tr); }
       table.append(head, body); scroll.append(table); section.append(scroll); return section;
     });
-    content.replaceChildren(...sections);
-    if (!sections.length) content.append(el("p", "muted small", "Tidak ada tabel tersedia."));
+    content.replaceChildren(logSection,filtering,...sections);
   } catch (error) { content.replaceChildren(el("p", "mirror-error", error.message)); }
 }
 $("#mirror-db-button").addEventListener("click", openMirrorDb);
@@ -933,3 +1011,19 @@ async function init() {
 }
 
 init();
+
+function applyTheme(theme) {
+  const light = theme === "light";
+  document.documentElement.dataset.theme = light ? "light" : "dark";
+  $("#theme-toggle").textContent = light ? "☾ Dark" : "☀ Light";
+  $("#theme-toggle").setAttribute("aria-label", light ? "Aktifkan Dark mode" : "Aktifkan Light mode");
+  $("#theme-toggle").setAttribute("aria-pressed", String(light));
+}
+let savedTheme;
+try { savedTheme = localStorage.getItem("crypto-trails-theme"); } catch {}
+applyTheme(savedTheme === "light" || savedTheme === "dark" ? savedTheme : window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+$("#theme-toggle").addEventListener("click", () => {
+  const theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  applyTheme(theme);
+  try { localStorage.setItem("crypto-trails-theme", theme); } catch {}
+});

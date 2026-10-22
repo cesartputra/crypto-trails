@@ -72,6 +72,12 @@ class TrailNode(BaseModel):
     crypto_amount: Decimal = Decimal(0)
     asset: str | None = None
     chain: str | None = None
+    chain_id: int | None = None
+    is_bridge_node: bool = False
+    bridge_protocol_name: str | None = None
+    bridged_from_chain: str | None = None
+    bridged_to_chain: str | None = None
+    explorer_url: str = ""
     address: str | None = None
     account: str | None = None
     taint_score_pct: Decimal | None = Field(default=None, ge=0, le=100)
@@ -90,6 +96,13 @@ class TrailEdge(BaseModel):
     amount_idr: Money = Decimal(0)
     crypto_amount: Decimal = Decimal(0)
     asset: str | None = None
+    chain: str | None = None
+    chain_id: int | None = None
+    is_bridge_node: bool = False
+    bridge_protocol_name: str | None = None
+    bridged_from_chain: str | None = None
+    bridged_to_chain: str | None = None
+    explorer_url: str = ""
     tx_hash: str | None = None
     timestamp: datetime | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
@@ -107,6 +120,16 @@ class P2PEscrowMatchDetail(BaseModel):
     linked_onchain_address: str | None = None
     linked_final_bank_account: str | None = None
     evidence: dict[str, Any] = Field(default_factory=dict)
+
+class PAKDAPICallLog(BaseModel):
+    endpoint_url: str
+    request_payload: dict[str, Any] = Field(default_factory=dict)
+    response_status_code: int
+    latency_ms: float = Field(ge=0)
+    scoped_fields_returned: list[str] = Field(default_factory=list)
+    response_payload: dict[str, Any] = Field(default_factory=dict)
+    pakd_code: str = ""
+    transport_mode: str = "IN_PROCESS_ASGI_HTTP_DEMO"
 
 class CrossRailGraphResponse(BaseModel):
     trace_id: str
@@ -130,6 +153,7 @@ class CrossRailGraphResponse(BaseModel):
     governance_requests: list[InstitutionFreezeDecision] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
     live_metadata: dict[str, Any] = Field(default_factory=dict)
+    pakd_api_exchange_logs: list[PAKDAPICallLog] = Field(default_factory=list)
 
 class LiveWalletTrailInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
@@ -139,6 +163,8 @@ class LiveWalletTrailInput(BaseModel):
     token_filter: Literal["ALL", "ETH", "USDT", "USDC"] = "ALL"
     direction: Literal["OUTBOUND", "BOTH"] = "OUTBOUND"
     simulate_fna_and_mirror_origin: bool = False
+    source_chain: Literal["ETHEREUM", "BSC", "POLYGON", "ARBITRUM", "OPTIMISM", "BASE"] = "ETHEREUM"
+    auto_scan_cross_chain: bool = False
 
     @field_validator("etherscan_api_key")
     @classmethod

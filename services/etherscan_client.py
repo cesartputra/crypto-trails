@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import httpx
 
 from schemas import TrailEdge, TrailNode
+from services.chains import CHAIN_CONFIG, normalize_chain, explorer_address_url, explorer_tx_url
 
 D = Decimal
 ADDRESS = re.compile(r"^0x[0-9a-fA-F]{40}$")
@@ -29,6 +30,34 @@ KNOWN_EVM_ENTITIES = {
     TOKEN_CONTRACTS["USDC"]: {"label": "Circle: USDC Contract", "kind": "TOKEN_CONTRACT", "source_url": "https://developers.circle.com/stablecoins/usdc-contract-addresses"},
     "0x28c6c06298d514db089934071355e5743bf21d60": {"label": "Binance 14 (public label)", "kind": "PUBLIC_EXCHANGE_WALLET", "source_url": "https://etherscan.io/address/0x28c6c06298d514db089934071355e5743bf21d60"},
     "0x7a250d5630b4cf539739df2c5dacb4c659f2488d": {"label": "Uniswap V2 Router 02", "kind": "DEX_ROUTER", "source_url": "https://github.com/Uniswap/v2-periphery"},
+}
+# Verified deployment references; chain-scoped labels are context, not settlement proof.
+KNOWN_BRIDGE_CONTRACTS = {"ETHEREUM": {
+ "0x8731d54e9d02c286767d56ac03e8037c07e01e98": {"name":"Stargate Finance (LayerZero)","source_url":"https://stargateprotocol.gitbook.io/stargate/developers/contract-addresses/mainnet"},
+ "0x5427fefa711eff984124bfbb1ab6fbf5e3da1820": {"name":"Celer cBridge","source_url":"https://cbridge-docs.celer.network/reference/contract-addresses"},
+ "0x5c7bcd6e7de5423a257d81b442095a1a6ced35c5": {"name":"Across SpokePool","source_url":"https://docs.across.to/chains-and-contracts"},
+ "0x80c67432656d59144ceff962e8faf8926599bcf8": {"name":"Orbiter Maker","source_url":"https://docs.orbiter.finance/","role":"MAKER_ADDRESS"},
+ "0xa0c68c638235ee32657e8f720a23cec1bfc77c77": {"name":"Polygon PoS Bridge","source_url":"https://docs.polygon.technology/pos/reference/contracts/genesis-contracts/"},
+ "0x4dbd4fc535ac27206064b68ffcf827b0a60bab3f": {"name":"Arbitrum Official Bridge","source_url":"https://docs.arbitrum.io/build-decentralized-apps/reference/contract-addresses"},
+ "0x3ee18b2214aff97000d974cf647e7c347e8fa585": {"name":"Wormhole Token Bridge","source_url":"https://wormhole.com/docs/products/reference/contract-addresses/"},
+ "0x1a44076050125825900e736c501f859c50fe728c": {"name":"LayerZero V2 Endpoint","source_url":"https://docs.layerzero.network/v2/deployments/deployed-contracts","pivot_supported":False}
+}}
+for _chain, _address in {
+    "ARBITRUM":"0xe35e9842fceaca96570b734083f4a58e8f7c5f2a",
+    "BASE":"0x09aea4b2242abc8bb4bb78d537a67a245a7bec64",
+    "OPTIMISM":"0x6f26bf09b1c792e3228e5467807a900a503c0281",
+    "POLYGON":"0x9295ee1d8c5b022be115a2ad3c30c72e34e7f096",
+    "BSC":"0x4e8e101924ede233c13e2d8622dc8aed2872d505"
+}.items():
+    KNOWN_BRIDGE_CONTRACTS[_chain] = {_address:{"name":"Across SpokePool","source_url":"https://docs.across.to/chains-and-contracts"}}
+
+CHAIN_TOKENS = {
+ "ETHEREUM": {"USDT":(TOKEN_CONTRACTS["USDT"],6),"USDC":(TOKEN_CONTRACTS["USDC"],6)},
+ "BSC":{"USDT":("0x55d398326f99059ff775485246999027b3197955",18),"USDC":("0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",18)},
+ "ARBITRUM":{"USDT":("0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",6),"USDC":("0xaf88d065e77c8cc2239327c5edb3a432268e5831",6)},
+ "POLYGON":{"USDT":("0xc2132d05d31c914a87c6611c10748aeb04b58e8f6",6),"USDC":("0x3c499c542cef5e3811e1192ce70d8cc03d5c3359",6)},
+ "OPTIMISM":{"USDT":("0x94b008aa00579c1307b0ef2c499ad98a8ce58e58",6),"USDC":("0x0b2c639c533813f4aa9d7837caf62653d097ff85",6)},
+ "BASE":{"USDC":("0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",6)}
 }
 _rate_lock = threading.Lock()
 _next_request_at = 0.0
@@ -91,12 +120,12 @@ def _units(value, decimals):
 
 
 class EtherscanClient:
-    MAX_REQUESTS = 24
+    MAX_REQUESTS = 36
     MAX_NODES = 64
     MAX_EDGES = 128
     PAGE_SIZE = 15
 
-    def __init__(self, api_key=None, base_url=None, fallback_url=None, transport=None, mirror_db=None):
+    def __init__(self, api_key=None, base_url=None, fallback_url=None, transport=None, pakd_consumer=None):
         config = _config()
         if api_key is not None and not isinstance(api_key, str):
             raise ValueError("API key Etherscan wajib teks")
@@ -108,20 +137,24 @@ class EtherscanClient:
         self.provider = "ETHERSCAN" if self.api_key else "BLOCKSCOUT"
         self.endpoint = self.base_url if self.api_key else self.fallback_url
         self.transport = transport
-        if mirror_db is None:
-            from services.pakd_mirror_db import mirror_db as shared_mirror_db
-            mirror_db = shared_mirror_db
-        self.mirror_db = mirror_db
+        from services.pakd_api_consumer import PAKDAPIConsumer
+        self.pakd_consumer = pakd_consumer or PAKDAPIConsumer()
 
-    async def _get(self, client, action, address, **extra):
+    async def _get(self, client, action, address, chain="ETHEREUM", **extra):
+        chain = normalize_chain(chain)
+        endpoint = self.base_url if self.api_key else self.fallback_url if chain == "ETHEREUM" else CHAIN_CONFIG[chain]["fallback_url"]
+        if not endpoint or chain == "TRON":
+            raise EtherscanAPIError("Chain ini memerlukan API key Etherscan atau hanya tersedia sebagai skenario")
+        if urlparse(endpoint).path == "/api" and self.api_key and chain != "ETHEREUM":
+            raise EtherscanAPIError("Multichain memerlukan endpoint Etherscan V2")
         params = {"module": "account", "action": action, "address": address, **extra}
         if self.provider == "ETHERSCAN":
             params["apikey"] = self.api_key
-            if urlparse(self.endpoint).path == "/v2/api":
-                params["chainid"] = "1"
+            if urlparse(endpoint).path == "/v2/api":
+                params["chainid"] = str(CHAIN_CONFIG[chain]["chain_id"])
         await _throttle()
         try:
-            async with client.stream("GET", self.endpoint, params=params) as response:
+            async with client.stream("GET", endpoint, params=params) as response:
                 response.raise_for_status()
                 raw = bytearray()
                 async for chunk in response.aiter_bytes():
@@ -150,26 +183,28 @@ class EtherscanClient:
         except (httpx.HTTPError, ValueError, TypeError):
             raise EtherscanAPIError("Explorer Mainnet gagal diakses atau respons tidak valid; tidak ada data simulasi pengganti") from None
 
-    def _node(self, address, hop):
-        match = self.mirror_db.match_wallet_in_mirror_db(address)
-        known = KNOWN_EVM_ENTITIES.get(address)
-        metadata = {"simulation": False, "is_live": True, "evidence_source": self.provider + "_LIVE",
-                    "architecture_zone": "Zona 3: Ethereum Mainnet", "ownership": "UNKNOWN", "taint_status": "UNKNOWN",
-                    "balance_status": "NOT_FETCHED", "balance_asset": "ETH", "is_seed_wallet": hop == 0,
-                    "explorer_url": "https://etherscan.io/address/" + address}
-        label, kind = address[:10] + "…" + address[-4:], "LIVE_UNATTRIBUTED_WALLET"
-        if known:
-            label, kind = known["label"], known["kind"]
-            metadata["public_entity"] = known
+    async def _node(self, address, hop, chain="ETHEREUM"):
+        chain = normalize_chain(chain)
+        match = await self.pakd_consumer.consume_pakd_wallet_reverse_lookup_api(address, chain)
+        known = KNOWN_EVM_ENTITIES.get(address) if chain == "ETHEREUM" else None
+        bridge = KNOWN_BRIDGE_CONTRACTS.get(chain, {}).get(address)
+        label = known["label"] if known else address[:10] + "…" + address[-4:]
+        metadata = {"simulation":False,"is_live":True,"evidence_source":self.provider+"_LIVE",
+            "ownership":"UNKNOWN","taint_status":"UNKNOWN","balance_status":"NOT_FETCHED",
+            "balance_asset":CHAIN_CONFIG[chain]["native_symbol"],"is_seed_wallet":hop==0}
         if match:
-            metadata.update(mirror_match=match, identity_source="SYNTHETIC_PAKD_MIRROR_DB_SQLITE", ownership="MIRROR_RECORD_MATCH_REQUIRES_VERIFICATION")
-            label, kind = f"{match['pakd_name']} · {match['user_uid']} (mirror demo)", "PAKD_MIRROR_MATCH"
-        return TrailNode(id="eth-" + address[2:], label=label, node_zone="ONCHAIN_WALLET", node_type=kind,
-                         entity_label=label if known or match else "Unattributed Mainnet Address", address=address,
-                         chain="ETHEREUM_ERC20", asset="ETH", hop=hop, taint_score_pct=None,
-                         status="LIVE_MIRROR_MATCH" if match else "LIVE_READ_ONLY", metadata=metadata)
+            metadata.update(mirror_match=match,identity_source="SYNTHETIC_PAKD_SCOPED_MIRROR_REST_API")
+            label=f"{match['pakd_name']} · {match['user_uid']} (API demo)"
+        if bridge:metadata["bridge_reference"]=bridge;label="🌉 "+bridge["name"]
+        return TrailNode(id=chain.lower()+"-"+address[2:],label=label,node_zone="ONCHAIN_WALLET",
+            node_type="BRIDGE_PROTOCOL" if bridge else "PAKD_MIRROR_MATCH" if match else known["kind"] if known else "LIVE_UNATTRIBUTED_WALLET",
+            entity_label=label,address=address,chain=chain,chain_id=CHAIN_CONFIG[chain]["chain_id"],
+            asset=CHAIN_CONFIG[chain]["native_symbol"],hop=hop,taint_score_pct=None,status="LIVE_READ_ONLY",metadata=metadata,
+            is_bridge_node=bool(bridge),bridge_protocol_name=bridge["name"] if bridge else None,
+            explorer_url=explorer_address_url(chain,address))
 
-    def _parse(self, rows, action, address, token_filter, direction):
+    def _parse(self, rows, action, address, token_filter, direction, chain="ETHEREUM"):
+        tokens = CHAIN_TOKENS[normalize_chain(chain)]
         transfers, skipped = [], 0
         occurrences = Counter()
         for raw in rows[:self.PAGE_SIZE]:
@@ -191,7 +226,7 @@ class EtherscanClient:
                 if action == "txlist":
                     if "isError" not in raw:
                         raise ValueError()
-                    symbol, decimals = "ETH", 18
+                    symbol, decimals = CHAIN_CONFIG[normalize_chain(chain)]["native_symbol"], 18
                     event_key = tx_hash + ":native"
                 else:
                     contract = str(raw.get("contractAddress", "")).lower()
@@ -203,9 +238,9 @@ class EtherscanClient:
                     decimals = _uint(raw.get("tokenDecimal"))
                     if decimals > 36:
                         raise ValueError()
-                    canonical = next((name for name, known_contract in TOKEN_CONTRACTS.items() if known_contract == contract), None)
+                    canonical = next((name for name, (known_contract, _) in tokens.items() if known_contract == contract), None)
                     if canonical:
-                        if decimals != 6:
+                        if decimals != tokens[canonical][1]:
                             raise ValueError()
                         symbol = canonical
                     elif symbol.upper() in TOKEN_CONTRACTS:
@@ -218,7 +253,7 @@ class EtherscanClient:
                     else:
                         occurrences[fingerprint] += 1
                         event_key = f"{fingerprint}:occurrence:{occurrences[fingerprint]}"
-                if token_filter != "ALL" and symbol != token_filter:
+                if token_filter != "ALL" and symbol != token_filter and not (token_filter == "ETH" and action == "txlist"):
                     continue
                 amount = _units(raw["value"], decimals)
                 if amount <= 0:
@@ -229,81 +264,141 @@ class EtherscanClient:
                 skipped += 1
         return transfers, skipped
 
-    async def trace_real_wallet_on_etherscan(self, seed_wallet_address, max_hops=2, token_filter="ALL", direction="OUTBOUND"):
-        if not isinstance(seed_wallet_address, str) or not ADDRESS.fullmatch(seed_wallet_address):
-            raise ValueError("Wallet wajib berupa alamat Ethereum 0x dengan 40 digit heksadesimal")
-        if isinstance(max_hops, bool) or not isinstance(max_hops, int) or not 1 <= max_hops <= 3:
-            raise ValueError("max_hops harus 1 sampai 3")
-        if token_filter not in {"ALL", "ETH", "USDT", "USDC"} or direction not in {"OUTBOUND", "BOTH"}:
-            raise ValueError("Filter aset atau arah pelacakan tidak didukung")
-        seed = seed_wallet_address.lower()
-        nodes = {seed: self._node(seed, 0)}
-        queue, visited, edges, seen_events = deque([(seed, 0)]), set(), [], set()
-        requests, skipped, truncated, missing_log_index = 0, 0, False, False
-        warnings = ["LIVE READ ONLY: transaksi asli Ethereum Mainnet; hubungan antar-wallet bukan bukti kepemilikan, taint dana laporan, atau nilai yang dapat dibekukan.",
-                    "Satu halaman 15 transaksi terbaru per jenis dan wallet; bukan riwayat lengkap. Transfer internal, NFT, dan saldo token ERC-20 tidak dicakup.",
-                    "Kecocokan identitas Mirror DB pada PoC berasal dari data sintetis, bukan KYC PAKD operasional."]
-        if self.provider == "BLOCKSCOUT":
-            warnings.append("API key kosong: memakai Blockscout Ethereum Mainnet publik; ketersediaan, indeks, dan kuota layanan tidak dijamin.")
+    async def pivot_across_chains(self, wallet_address, source_chain, amount, timestamp, *, fetch, token_filter="ALL", token_symbol=None):
+        candidates=[]
+        for chain in CHAIN_CONFIG:
+            if chain in {source_chain,"TRON"}:continue
+            if not self.api_key and not CHAIN_CONFIG[chain]["fallback_url"]:continue
+            actions=["txlist"] if token_filter=="ETH" else ["tokentx"] if token_filter in TOKEN_CONTRACTS else ["txlist","tokentx"]
+            for action in actions:
+                rows=await fetch(chain,action,wallet_address,False)
+                transfers,_=self._parse(rows,action,wallet_address,token_filter,"BOTH",chain)
+                for tx in transfers:
+                    delay=(tx["timestamp"]-timestamp).total_seconds()
+                    if tx["to"]==wallet_address and 0 <= delay <= 7200 and (token_symbol is None or tx["symbol"] == token_symbol) and D("0.8") * amount <= tx["amount"] <= D("1.05") * amount:
+                        candidates.append({"chain":chain,"transfer":tx})
+                        break
+                if any(item["chain"]==chain for item in candidates):break
+        return candidates
+
+    async def detect_and_follow_bridge_hop(self,wallet_address,source_chain,amount,timestamp,*,bridge_address,fetch,token_filter="ALL",token_symbol=None):
+        bridge=KNOWN_BRIDGE_CONTRACTS.get(source_chain,{}).get(bridge_address)
+        if not bridge or bridge.get("pivot_supported") is False:return []
+        return await self.pivot_across_chains(wallet_address,source_chain,amount,timestamp,fetch=fetch,token_filter=token_filter,token_symbol=token_symbol)
+
+    async def trace_real_wallet_on_etherscan(self,seed_wallet_address,max_hops=2,token_filter="ALL",direction="OUTBOUND",source_chain="ETHEREUM",auto_scan_cross_chain=False):
+        if not isinstance(seed_wallet_address,str) or not ADDRESS.fullmatch(seed_wallet_address):raise ValueError("Alamat EVM tidak valid")
+        if type(max_hops) is not int or not 1<=max_hops<=3:raise ValueError("max_hops harus 1 sampai 3")
+        if token_filter not in {"ALL","ETH","USDT","USDC"} or direction not in {"OUTBOUND","BOTH"}:raise ValueError("Filter/arah tidak didukung")
+        source_chain=normalize_chain(source_chain)
+        if source_chain=="TRON":raise ValueError("TRON hanya simulasi")
+        seed=seed_wallet_address.lower();nodes={};edges=[];seen=set();visited=set();queue=deque([(source_chain,seed,0)])
+        warnings=["LIVE READ ONLY: transaksi publik bukan bukti kepemilikan, taint atau recovery.",
+            "Sampel 15 record terbaru per jenis/wallet; internal transfers, NFT, dan saldo ERC-20 tidak dicakup.",
+            "Identitas dari Scoped Mirror API PAKD adalah seed sintetis."]
+        stats={"requests":0,"truncated":False};cache={};failed=set();pivoted=set()
+        async def ensure(chain,address,hop):
+            key=(chain,address)
+            if key not in nodes:
+                if len(nodes)>=self.MAX_NODES:stats["truncated"]=True;return None
+                nodes[key]=await self._node(address,hop,chain)
+            return nodes[key]
+        async def fetch(chain,action,address,required=False):
+            key=(chain,action,address)
+            if key in cache:return cache[key]
+            if stats["requests"]>=self.MAX_REQUESTS:stats["truncated"]=True;return [] if action!="balance" else None
+            if chain in failed:return [] if action!="balance" else None
+            params={"tag":"latest"} if action=="balance" else {"page":1,"offset":self.PAGE_SIZE,"sort":"desc"}
+            if action=="txlist":params.update(startblock=0,endblock=99999999)
+            if action=="tokentx" and token_filter in CHAIN_TOKENS[chain]:params["contractaddress"]=CHAIN_TOKENS[chain][token_filter][0]
+            stats["requests"]+=1
+            try:
+                value=await self._get(client,action,address,chain=chain,**params)
+            except EtherscanAPIError:
+                if required:raise
+                failed.add(chain);warnings.append(f"{chain}: explorer tidak tersedia/kuota dibatasi; chain ini belum dapat diperiksa.")
+                return [] if action!="balance" else None
+            cache[key]=value
+            if isinstance(value,list) and len(value)>=self.PAGE_SIZE:stats["truncated"]=True
+            return value
+        async def add_transfer(chain,tx,depth):
+            event=chain+":"+tx["key"]
+            if event in seen:return None
+            if len(edges)>=self.MAX_EDGES:stats["truncated"]=True;return None
+            a=await ensure(chain,tx["from"],depth);b=await ensure(chain,tx["to"],depth+1)
+            if not a or not b:return None
+            seen.add(event)
+            edge=TrailEdge(id="live-"+sha256(event.encode()).hexdigest()[:24],source=a.id,target=b.id,edge_type="ONCHAIN_TRANSFER",
+                label=f"{tx['amount']} {tx['symbol']}",crypto_amount=tx["amount"],asset=tx["symbol"],tx_hash=tx["hash"],timestamp=tx["timestamp"],
+                chain=chain,chain_id=CHAIN_CONFIG[chain]["chain_id"],explorer_url=explorer_tx_url(chain,tx["hash"]),
+                metadata={"simulation":False,"is_live":True,"evidence_source":self.provider+"_LIVE","chain":chain,"contract_address":tx["contract"],
+                    "log_index":tx["log_index"],"taint_status":"UNKNOWN"})
+            edges.append(edge)
+            if tx["contract"] and tx["log_index"] is None and not any("logIndex" in w for w in warnings):
+                warnings.append("Provider tanpa logIndex: deduplikasi ERC-20 memakai fingerprint dan urutan baris, bukan bukti log lengkap.")
+            return edge
         try:
-            async with asyncio.timeout(75):
-                async with httpx.AsyncClient(transport=self.transport, timeout=10, follow_redirects=False) as client:
+            async with asyncio.timeout(90):
+                async with httpx.AsyncClient(transport=self.transport,timeout=10,follow_redirects=False) as client:
                     while queue:
-                        address, depth = queue.popleft()
-                        if address in visited or depth >= max_hops:
-                            continue
-                        actions = ["txlist"] if token_filter == "ETH" else ["tokentx"] if token_filter in TOKEN_CONTRACTS else ["txlist", "tokentx"]
-                        if requests + len(actions) + 1 > self.MAX_REQUESTS:
-                            truncated = True
-                            break
-                        visited.add(address)
-                        requests += 1
-                        balance = await self._get(client, "balance", address, tag="latest")
-                        nodes[address].balance_crypto = balance
-                        nodes[address].metadata.update(balance_status="FETCHED", balance_eth=str(balance))
+                        chain,address,depth=queue.popleft();key=(chain,address)
+                        if key in visited or depth>=max_hops:continue
+                        if stats["requests"]>=self.MAX_REQUESTS:stats["truncated"]=True;break
+                        node=await ensure(chain,address,depth)
+                        if not node:continue
+                        visited.add(key)
+                        balance=await fetch(chain,"balance",address,chain==source_chain and address==seed)
+                        if balance is not None:node.balance_crypto=balance;node.metadata.update(balance_status="FETCHED",balance_eth=str(balance))
+                        actions=["txlist"] if token_filter=="ETH" else ["tokentx"] if token_filter in TOKEN_CONTRACTS else ["txlist","tokentx"]
                         for action in actions:
-                            params = {"page": 1, "offset": self.PAGE_SIZE, "sort": "desc"}
-                            if action == "txlist":
-                                params.update(startblock=0, endblock=99999999)
-                            elif token_filter in TOKEN_CONTRACTS:
-                                params["contractaddress"] = TOKEN_CONTRACTS[token_filter]
-                            requests += 1
-                            rows = await self._get(client, action, address, **params)
-                            truncated |= len(rows) >= self.PAGE_SIZE
-                            transfers, invalid = self._parse(rows, action, address, token_filter, direction)
-                            skipped += invalid
-                            for transfer in transfers:
-                                if transfer["key"] in seen_events:
-                                    continue
-                                counterpart = transfer["to"] if transfer["from"] == address else transfer["from"]
-                                if counterpart not in nodes and len(nodes) >= self.MAX_NODES or len(edges) >= self.MAX_EDGES:
-                                    truncated = True
-                                    continue
-                                seen_events.add(transfer["key"])
-                                if counterpart not in nodes:
-                                    nodes[counterpart] = self._node(counterpart, depth + 1)
-                                    queue.append((counterpart, depth + 1))
-                                missing_log_index |= action == "tokentx" and transfer["log_index"] is None
-                                metadata = {"simulation": False, "is_live": True, "evidence_source": self.provider + "_LIVE",
-                                            "chain": "ETHEREUM_ERC20", "contract_address": transfer["contract"],
-                                            "log_index": transfer["log_index"], "event_identity": "LOG_INDEX" if transfer["log_index"] is not None else "NATIVE_TX_HASH" if action == "txlist" else "PROVIDER_ROW_OCCURRENCE",
-                                            "explorer_url": "https://etherscan.io/tx/" + transfer["hash"], "taint_status": "UNKNOWN"}
-                                edges.append(TrailEdge(id="live-" + sha256(transfer["key"].encode()).hexdigest()[:24],
-                                    source=nodes[transfer["from"]].id, target=nodes[transfer["to"]].id, edge_type="ONCHAIN_TRANSFER",
-                                    label=f"{transfer['amount']} {transfer['symbol']}", crypto_amount=transfer["amount"], asset=transfer["symbol"],
-                                    tx_hash=transfer["hash"], timestamp=transfer["timestamp"], metadata=metadata))
-        except TimeoutError:
-            raise EtherscanAPIError("Batas waktu pelacakan Mainnet tercapai; coba 1 hop atau filter satu aset") from None
-        if truncated:
-            warnings.append("HASIL TERBATAS: batas halaman, jumlah request, node, atau edge tercapai; sebagian riwayat/cabang belum diambil.")
-        if missing_log_index:
-            warnings.append("Provider tidak menyertakan logIndex untuk sebagian ERC-20; deduplikasi memakai fingerprint dan urutan kemunculan pada halaman provider, bukan bukti log lengkap.")
-        if skipped:
-            warnings.append(f"Record explorer tidak valid/tidak didukung dilewati: {skipped}.")
-        if not edges:
-            warnings.append("Tidak ada transfer yang memenuhi filter pada halaman yang tersedia; wallet tetap ditampilkan tanpa membuat transaksi demo.")
-        return {"nodes": list(nodes.values()), "edges": edges, "warnings": warnings,
-                "metadata": {"provider": self.provider, "network": "ETHEREUM_MAINNET", "chain_id": 1, "simulation": False,
-                             "seed_wallet_address": seed, "max_hops": max_hops, "token_filter": token_filter, "direction": direction,
-                             "requests_made": requests, "wallets_queried": len(visited), "page_size": self.PAGE_SIZE, "truncated": truncated,
-                             "fetched_at": datetime.now(timezone.utc).isoformat()}}
+                            if token_filter in TOKEN_CONTRACTS and token_filter not in CHAIN_TOKENS[chain]:
+                                warnings.append(f"{chain}: kontrak {token_filter} kanonis belum didukung.");continue
+                            rows=await fetch(chain,action,address,chain==source_chain and address==seed)
+                            transfers,skipped=self._parse(rows,action,address,token_filter,direction,chain)
+                            if skipped:warnings.append(f"{chain}: {skipped} record tidak valid dilewati.")
+                            for tx in transfers:
+                                edge=await add_transfer(chain,tx,depth)
+                                counterpart=tx["to"] if tx["from"]==address else tx["from"]
+                                if edge:queue.append((chain,counterpart,depth+1))
+                                bridge=KNOWN_BRIDGE_CONTRACTS.get(chain,{}).get(counterpart)
+                                if auto_scan_cross_chain and tx["from"]==address and bridge and (chain,tx["hash"]) not in pivoted:
+                                    pivoted.add((chain,tx["hash"]))
+                                    candidates=await self.detect_and_follow_bridge_hop(address,chain,tx["amount"],tx["timestamp"],bridge_address=counterpart,fetch=fetch,token_filter=token_filter,token_symbol=tx["symbol"])
+                                    for candidate in candidates[:5]:
+                                        destination=candidate["chain"];landing=candidate["transfer"]
+                                        target=await ensure(destination,address,depth+1)
+                                        bridge_node=await ensure(chain,counterpart,depth+1)
+                                        if bridge_node:
+                                            bridge_node.bridged_from_chain=chain;bridge_node.bridged_to_chain=destination
+                                        if not target or not bridge_node or len(edges)>=self.MAX_EDGES:stats["truncated"]=True;continue
+                                        target.bridged_from_chain=chain;target.bridged_to_chain=destination
+                                        pivotid=f"{chain}:{tx['hash']}:{destination}:{landing['key']}"
+                                        edges.append(TrailEdge(id="pivot-"+sha256(pivotid.encode()).hexdigest()[:24],source=bridge_node.id,target=target.id,
+                                            edge_type="CROSS_CHAIN_BRIDGE",label=f"KANDIDAT BRIDGE: {chain} → {destination}",chain=destination,chain_id=CHAIN_CONFIG[destination]["chain_id"],
+                                            bridge_protocol_name=bridge["name"],bridged_from_chain=chain,bridged_to_chain=destination,
+                                            timestamp=landing["timestamp"],explorer_url=explorer_tx_url(destination,landing["hash"]),
+                                            metadata={"simulation":False,"correlation_status":"CANDIDATE_UNVERIFIED","source_tx_hash":tx["hash"],"destination_tx_hash":landing["hash"],
+                                                "source_chain":chain,"destination_chain":destination,
+                                                "source_explorer_url":explorer_tx_url(chain,tx["hash"]),"destination_explorer_url":explorer_tx_url(destination,landing["hash"]),
+                                                "amount_source":str(tx["amount"]),"amount_destination":str(landing["amount"]),"evidence_source":"TEMPORAL_ADDRESS_CORRELATION", "is_live":False}))
+                                        await add_transfer(destination,landing,depth)
+                                        queue.appendleft((destination,address,0))
+                    if auto_scan_cross_chain:
+                        for chain in CHAIN_CONFIG:
+                            if chain in {source_chain,"TRON"} or not self.api_key and not CHAIN_CONFIG[chain]["fallback_url"]:continue
+                            action="tokentx" if token_filter in TOKEN_CONTRACTS else "txlist"
+                            rows=await fetch(chain,action,seed)
+                            txs,_=self._parse(rows,action,seed,token_filter,"BOTH",chain)
+                            if txs:
+                                await ensure(chain,seed,0)
+                                for tx in txs:await add_transfer(chain,tx,0)
+        except TimeoutError:raise EtherscanAPIError("Deadline multichain tercapai; kurangi hop/chain") from None
+        if stats["truncated"]:warnings.append("HASIL TERBATAS: halaman atau budget request/node/edge tercapai.")
+        if not edges:warnings.append("Tidak ada transfer sesuai filter pada halaman yang tersedia.")
+        if not self.api_key:warnings.append("Fallback publik per chain; BSC memerlukan key Etherscan, TRON hanya simulasi.")
+        warnings.append("Pivot lintas-chain adalah kandidat alamat/waktu dalam 2 jam; belum bukti settlement bridge dan tidak menambah recovery.")
+        return {"nodes":list(nodes.values()),"edges":edges,"warnings":warnings,"pakd_api_exchange_logs":self.pakd_consumer.logs,
+            "metadata":{"provider":self.provider,"network":"MULTICHAIN_MAINNET","chain_id":CHAIN_CONFIG[source_chain]["chain_id"],"source_chain":source_chain,
+                "seed_wallet_address":seed,"simulation":False,"max_hops":max_hops,"token_filter":token_filter,"native_asset":CHAIN_CONFIG[source_chain]["native_symbol"],
+                "direction":direction,"auto_scan_cross_chain":auto_scan_cross_chain,"requests_made":stats["requests"],"wallets_queried":len(visited),
+                "truncated":stats["truncated"],"unavailable_chains":sorted(failed),"fetched_at":datetime.now(timezone.utc).isoformat()}}

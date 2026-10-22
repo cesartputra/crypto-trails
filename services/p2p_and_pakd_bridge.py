@@ -1,18 +1,19 @@
-"""PAKD Mirror DB: SQL forward resolution, ledger checks and reverse loopback."""
+"""PAKD Scoped Mirror API: REST forward resolution, ledger checks and reverse loopback."""
 from datetime import datetime
 from decimal import Decimal
 from schemas import P2PEscrowMatchDetail, PAKDInternalTrailRecord, TrailNode, TrailEdge
 from services.bank_trailer import merchant_heuristic
 from scenarios import RATE
-from services.pakd_mirror_db import mirror_db, SOURCE
+from services.pakd_api_consumer import PAKDAPIConsumer, SOURCE
+from services.chains import normalize_chain
 
 D = Decimal
-PAKD_ZONE = "Zona 2: PAKD Mirror DB (SQLite · data sintetis)"
+PAKD_ZONE = "Zona 2: PAKD Scoped Mirror REST API · simulasi"
 
 
 class P2PAndPAKDBridge:
-    def __init__(self, database=None):
-        self.mirror_db = mirror_db if database is None else database
+    def __init__(self, consumer=None):
+        self.consumer = consumer or PAKDAPIConsumer()
 
     def match_handoff(self, handoff, scenario):
         matches = []
@@ -30,21 +31,20 @@ class P2PAndPAKDBridge:
         intake = matches[0]
         if intake["pakd_user_uid"] != scenario["onramp"]["uid"] or intake["pakd_name"] != scenario["onramp"]["platform"]:
             raise ValueError("Mapping UID/platform internal PAKD tidak konsisten")
-        match = self.mirror_db.lookup_deposit_by_fna_handoff(
-            handoff.pakd_gateway_va_or_account, handoff.rrn_reference_number, handoff.fiat_transfer_amount_idr)
-        if not match or match["user_uid"] != intake["pakd_user_uid"] or match["pakd_name"] != intake["pakd_name"]:
-            raise ValueError("Kueri SQL Mirror DB tidak menemukan profil PAKD yang sesuai handoff")
-        ramp = scenario["onramp"]
-        initial = next(w for w in scenario["wallets"] if w["id"] == ramp["initial_wallet"])
-        expected_address = initial["address"].lower() if ramp["chain"] in {"ETHEREUM_ERC20", "BSC_BEP20"} else initial["address"]
-        if (match["withdrawal_tx_hash"] != ramp["withdrawal_tx_hash"]
-            or match["initial_wallet_address"] != expected_address or match["chain"] != ramp["chain"]):
-            raise ValueError("Withdrawal/initial wallet tidak sesuai rekaman Mirror DB")
-        return {**intake, "mirror_deposit": match}
+        return intake
 
-    def resolve_onramp(self, handoff, scenario, nodes, edges):
+    async def resolve_onramp(self, handoff, scenario, nodes, edges):
         intake = self.match_handoff(handoff, scenario)
         ramp = scenario["onramp"]
+        match = await self.consumer.consume_pakd_inflow_lookup_api(handoff.pakd_gateway_va_or_account,
+            handoff.rrn_reference_number, handoff.fiat_transfer_amount_idr, pakd_code=ramp["platform"])
+        initial = next(w for w in scenario["wallets"] if w["id"] == ramp["initial_wallet"])
+        normalize_address = str if normalize_chain(ramp["chain"]) == "TRON" else str.lower
+        if (not match or match["user_uid"] != ramp["uid"] or match["withdrawal_tx_hash"] != ramp["withdrawal_tx_hash"]
+            or normalize_address(match["initial_wallet_address"]) != normalize_address(initial["address"])
+            or normalize_chain(match["chain"]) != normalize_chain(ramp["chain"])):
+            raise ValueError("Respons scoped API PAKD tidak sesuai UID/withdrawal handoff")
+        intake = {**intake, "mirror_deposit": match}
         gateway = next((n for n in nodes if n.account == handoff.pakd_gateway_va_or_account), None)
         if gateway is None:
             raise ValueError("Gateway handoff tidak ada dalam snapshot FNA")
@@ -54,7 +54,7 @@ class P2PAndPAKDBridge:
             "gateway_exact_match": True, "amount_exact_match": True, "bank_transfer_timestamp": handoff.fiat_transfer_timestamp.isoformat(),
             "pakd_intake_timestamp": intake["timestamp"], "intake_id": intake["intake_id"], "fna_trail_id": handoff.fna_trail_id,
             "evidence_source": SOURCE, "mirror_deposit": intake["mirror_deposit"],
-            "sql_query": "mirror_pakd_fiat_deposits JOIN mirror_pakd_users LEFT JOIN mirror_pakd_withdrawals · VA + RRN + amount exact"}
+            "api_endpoint": intake["mirror_deposit"]["api_endpoint"]}
         nodes.append(TrailNode(id="pakd-fiat-deposit", label=f"PAKD fiat ledger · {ramp['platform']}",
             node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_FIAT_DEPOSIT", entity_label=ramp["platform"],
             amount_idr=handoff.fiat_transfer_amount_idr, hop=base_hop + 1,
@@ -124,15 +124,15 @@ class P2PAndPAKDBridge:
         nodes.append(TrailNode(id="scammer-uid", label=f"Akun PAKD · {ramp['uid']}", node_zone="CRYPTO_EXCHANGE_BRIDGE",
             node_type="PAKD_USER_ACCOUNT", entity_label=ramp["platform"], crypto_amount=D(ramp["crypto_amount"]),
             amount_idr=D(ramp["crypto_amount"]) * RATE, asset=ramp["asset"], hop=hop + 1,
-            metadata={"architecture_zone": PAKD_ZONE, "uid": ramp["uid"], "kyc": ramp["kyc"],
+            metadata={"architecture_zone": PAKD_ZONE, "uid": ramp["uid"], "kyc": {"name": match["kyc_name_masked"], "nik_masked": match["kyc_nik_masked"]},
                 "pakd_internal_record_id": record.record_id, "evidence_source": SOURCE, "mirror_deposit": intake["mirror_deposit"],
-                "sql_query": "mirror_pakd_fiat_deposits JOIN mirror_pakd_users LEFT JOIN mirror_pakd_withdrawals · VA + RRN + amount exact"}))
+                "api_endpoint": intake["mirror_deposit"]["api_endpoint"]}))
         edges.append(TrailEdge(id="bridge-credit", source="pakd-conversion", target="scammer-uid", edge_type="PAKD_INTERNAL_CREDIT",
             label=f"{ramp['crypto_amount']} {ramp['asset']} → withdrawal", crypto_amount=D(ramp["crypto_amount"]), asset=ramp["asset"],
             timestamp=credit_time, metadata={"offchain": True, "uid": ramp["uid"]}))
         return detections, [record]
 
-    def resolve_offramp(self, scenario, nodes, edges):
+    async def resolve_offramp(self, scenario, nodes, edges):
         detections = []
         records = []
         accounts = {a["id"]: a for a in scenario["accounts"]}
@@ -140,11 +140,11 @@ class P2PAndPAKDBridge:
         for deposit_node in list(nodes):
             if deposit_node.node_type not in {"DIRECT_EXCHANGE_DEPOSIT", "P2P_ESCROW_DEPOSIT"}:
                 continue
-            match = self.mirror_db.match_wallet_in_mirror_db(deposit_node.address, deposit_node.chain)
+            match = await self.consumer.consume_pakd_wallet_reverse_lookup_api(deposit_node.address, deposit_node.chain)
             if not match or match["wallet_type"] != "CUSTODIAL_DEPOSIT_ADDRESS":
-                raise ValueError("Deposit wallet tidak memiliki pemetaan custodial pada Mirror DB")
+                raise ValueError("Deposit wallet tidak memiliki pemetaan custodial pada Scoped Mirror API")
             if match["user_uid"] != deposit_node.metadata.get("uid") or match["pakd_name"] != deposit_node.metadata.get("platform"):
-                raise ValueError("Reverse loopback Mirror DB tidak sesuai UID/platform")
+                raise ValueError("Reverse loopback Scoped Mirror API tidak sesuai UID/platform")
             deposit_node.metadata["mirror_match"] = match
             metadata = {**deposit_node.metadata, "mirror_match": match, "kyc_nik_masked": match["nik_masked"]}
             institution = match["pakd_name"]
@@ -184,6 +184,9 @@ class P2PAndPAKDBridge:
             if deposit.address != order["linked_onchain_address"] or deposit.metadata.get("uid") != order["scammer_uid"]:
                 continue
             metadata = deposit.metadata
+            p2p_match = await self.consumer.consume_pakd_p2p_lookup_api(deposit.address, deposit.chain)
+            if not p2p_match or p2p_match["p2p_offramp_account_number"] != order["linked_final_bank_account"]:
+                raise ValueError("API P2P PAKD tidak mengonfirmasi rekening settlement scoped")
             target = accounts[order["final_bank_node"]]
             fraction = deposit.taint_score_pct / 100 if deposit.taint_score_pct is not None else D(0)
             if target["account"] != order["linked_final_bank_account"]:

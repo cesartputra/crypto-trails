@@ -3,7 +3,6 @@ from datetime import datetime
 from decimal import Decimal
 from schemas import TrailNode, TrailEdge
 from scenarios import RATE
-from services.pakd_mirror_db import mirror_db
 
 D = Decimal
 
@@ -28,7 +27,7 @@ class ScenarioTrailer:
             if datetime.fromisoformat(tx["timestamp"]) < withdrawal_time:
                 raise ValueError("Transfer on-chain mendahului initial withdrawal")
             source, target = tx["source"], tx["target"]
-            if source not in incoming or hops[source] >= 3:
+            if source not in incoming or hops[source] >= (6 if scenario.get("bridge_scenario") else 3):
                 continue
             amount = D(tx["crypto_amount"])
             if not amount.is_finite() or amount <= 0 or amount > funds[source]:
@@ -45,11 +44,14 @@ class ScenarioTrailer:
             incoming[target] = incoming.get(target, D(0)) + amount
             tainted_received[target] = tainted_received.get(target, D(0)) + tainted
             hops[target] = min(hops.get(target, 99), hops[source] + 1)
-            edges.append(TrailEdge(id=tx["id"], source=source, target=target, edge_type="ONCHAIN_TRANSFER",
+            edges.append(TrailEdge(id=tx["id"], source=source, target=target, edge_type=tx.get("edge_type", "ONCHAIN_TRANSFER"),
+                chain=tx["chain"], bridge_protocol_name=tx.get("bridge_protocol_name"),
+                bridged_from_chain=tx.get("bridged_from_chain"), bridged_to_chain=tx.get("bridged_to_chain"),
                 label=f"{amount:,.4f}".rstrip("0").rstrip(".") + f" {tx['asset']}", crypto_amount=amount,
                 asset=tx["asset"], amount_idr=tainted * RATE, tx_hash=tx["tx_hash"], timestamp=tx["timestamp"],
                 metadata={"chain": tx["chain"], "tainted_crypto_amount": str(tainted),
-                          "evidence_source": "SIMULATED_SCENARIO_LEDGER", "taint_model": "proportional_chronological_stock"}))
+                          "evidence_source": "SIMULATED_SCENARIO_LEDGER", "simulation": True,
+                          "bridge_evidence_status": tx.get("bridge_evidence_status"), "taint_model": "proportional_chronological_stock"}))
         for wallet_id, spent in scenario.get("offramp_crypto_spent", {}).items():
             spent = D(spent)
             if spent < 0 or spent > funds.get(wallet_id, D(0)):
@@ -74,12 +76,11 @@ class ScenarioTrailer:
                         "calculated_remaining_crypto": str(funds[wallet_id]), "cumulative_received_crypto": str(amount),
                         "attribution_status": "STOPPED_AT_TRANSFORMATION" if w.get("boundary") else "FIXTURE_ATTRIBUTED",
                         "tx_hashes": [tx["tx_hash"] for tx in ledger if tx["target"] == wallet_id or tx["source"] == wallet_id]}
-            match = mirror_db.match_wallet_in_mirror_db(w["address"], ramp["chain"])
-            if match:
-                metadata["mirror_match"] = match
             nodes.append(TrailNode(id=wallet_id, label=w["label"], node_zone="ONCHAIN_WALLET", node_type=w["kind"],
                 entity_label=w["label"] if w["kind"] != "UNHOSTED_WALLET" else "Unhosted Wallet",
-                address=w["address"], chain=ramp["chain"], asset=ramp["asset"], crypto_amount=amount,
+                address=w["address"], chain=w.get("chain", ramp["chain"]), asset=ramp["asset"],
+                is_bridge_node=w.get("is_bridge_node", False), bridge_protocol_name=w.get("bridge_protocol_name"),
+                bridged_from_chain=w.get("bridged_from_chain"), bridged_to_chain=w.get("bridged_to_chain"), crypto_amount=amount,
                 amount_idr=tainted_received[wallet_id] * RATE, balance_crypto=balance,
                 taint_score_pct=pct.quantize(D("0.01")), hop=source_hop + 1 + hops[wallet_id], metadata=metadata))
         tx_hash = ramp["withdrawal_tx_hash"]

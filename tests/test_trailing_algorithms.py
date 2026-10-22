@@ -1,3 +1,4 @@
+import asyncio
 from copy import deepcopy
 from decimal import Decimal
 
@@ -83,13 +84,13 @@ def test_escrow_release_cannot_precede_recorded_pakd_fiat_intake():
     fixture["pakd_intake_ledger"][0]["timestamp"] = stamp(130)
     nodes, edges = FNAHandoffAdapter().import_snapshot(handoff_for(fixture), fixture)
     with pytest.raises(ValueError):
-        P2PAndPAKDBridge().resolve_onramp(handoff_for(fixture), fixture, nodes, edges)
+        asyncio.run(P2PAndPAKDBridge().resolve_onramp(handoff_for(fixture), fixture, nodes, edges))
 
 
 def prepare_onchain(fixture):
     handoff = handoff_for(fixture)
     nodes, edges = FNAHandoffAdapter().import_snapshot(handoff, fixture)
-    P2PAndPAKDBridge().resolve_onramp(handoff, fixture, nodes, edges)
+    asyncio.run(P2PAndPAKDBridge().resolve_onramp(handoff, fixture, nodes, edges))
     return nodes, edges
 
 
@@ -107,7 +108,7 @@ def test_p2p_bridge_rejects_ambiguous_or_inconsistent_escrow(mutation):
     else:
         order["escrow_release_timestamp"] = stamp(1000)
     with pytest.raises(ValueError):
-        P2PAndPAKDBridge().resolve_onramp(handoff_for(fixture), fixture, nodes, edges)
+        asyncio.run(P2PAndPAKDBridge().resolve_onramp(handoff_for(fixture), fixture, nodes, edges))
 
 
 def test_onchain_split_outflows_cannot_exceed_available_seed():
@@ -171,7 +172,7 @@ def test_offramp_cannot_resolve_inconsistent_or_duplicated_sale(mutation):
     else:
         fixture["p2p_orders"].append(dict(sale, order_id="DUPLICATE-SELL"))
     try:
-        detected, _ = P2PAndPAKDBridge().resolve_offramp(fixture, nodes, edges)
+        detected, _ = asyncio.run(P2PAndPAKDBridge().resolve_offramp(fixture, nodes, edges))
     except ValueError:
         return
     assert detected == []

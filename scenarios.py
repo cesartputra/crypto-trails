@@ -163,7 +163,50 @@ def fixtures():
     next(w for w in s2["wallets"] if w["id"] == "deposit")["kyc_nik_masked"] = "3273********0099"
     s1["bank_settlements"] = [{"order_id": "P2P-SELL-9104", "source_account": "1390011223300",
         "target_account": "034101009988111", "amount_idr": "160000000", "timestamp": stamp(360), "reference": "SYNTH-STL-9104"}]
-    return {s["id"]: s for s in (s1, s2, s3, s4)}
+    bridge_presets = []
+    for index, destination, source_pakd, receiving_pakd, protocol, contract in (
+        (5, "ARBITRUM", "Tokocrypto", "Indodax", "Stargate Finance (LayerZero)", "0x8731d54e9d02c286767d56ac03e8037c07e01e98"),
+        (6, "BSC", "Pintu", "Reku", "Celer cBridge", "0x5427fefa711eff984124bfbb1ab6fbf5e3da1820")):
+        scenario = deepcopy(s2)
+        scenario_id = f"bridge-ethereum-{destination.lower()}"
+        scenario.update(id=scenario_id, title=f"FNA → {source_pakd} API → {protocol} → {destination} → {receiving_pakd}",
+            description=f"Bridge sintetis Ethereum ke {destination}, hop lanjutan dan reverse lookup Scoped Mirror API {receiving_pakd}.",
+            bridge_scenario=True)
+        source_uid, target_uid = f"{source_pakd[:3].upper()}-BRIDGE-{index:03d}", f"{receiving_pakd[:3].upper()}-BRIDGE-{index:03d}"
+        source_address = "0x" + f"{index * 100 + 1:040x}"
+        landing_address = "0x" + f"{index * 100 + 2:040x}"
+        hop_address = "0x" + f"{index * 100 + 3:040x}"
+        deposit_address = "0x" + f"{index * 100 + 4:040x}"
+        gateway_number = f"88080000{index}500"
+        scenario["handoff"].update(scenario_id=scenario_id, iasc_ticket_id=f"IASC-DEMO-BRIDGE-{index}",
+            fna_trail_id=f"FNA-DEMO-BRIDGE-{index}", pakd_gateway_va_or_account=gateway_number,
+            rrn_reference_number=f"RRN-BRIDGE-{index:04d}")
+        scenario["onramp"].update(platform=source_pakd, uid=source_uid, chain="ETHEREUM",
+            withdrawal_tx_hash="0x"+sha256((scenario_id+"-withdrawal").encode()).hexdigest(),
+            kyc={"name":f"Nasabah Bridge Demo {index}", "document_ref":f"KYC-BRIDGE-{index}",
+                 "status":"SYNTHETIC_VERIFIED", "nik_masked":f"3174********{index:04d}"})
+        for records in (scenario["accounts"], scenario["fna_snapshot"]["nodes"]):
+            for row in records:
+                if row["id"]=="va":row.update(label=f"VA {source_pakd} · Demo",platform=source_pakd,account=gateway_number)
+        scenario["fna_snapshot"]["fna_trail_id"]=scenario["handoff"]["fna_trail_id"]
+        scenario["pakd_intake_ledger"][0].update(intake_id=f"PAKD-IN-BRIDGE-{index}",gateway_account=gateway_number,
+            rrn_reference_number=scenario["handoff"]["rrn_reference_number"],pakd_name=source_pakd,pakd_user_uid=source_uid)
+        scenario["wallets"]=[
+            wallet("w0",source_address,"Initial wallet · Ethereum",chain="ETHEREUM"),
+            wallet("bridge",contract,f"🌉 {protocol} · ETH → {destination}","BRIDGE_PROTOCOL",chain="ETHEREUM",
+                is_bridge_node=True,bridge_protocol_name=protocol,bridged_from_chain="ETHEREUM",bridged_to_chain=destination),
+            wallet("landing",landing_address,f"Landing wallet · {destination}",chain=destination),
+            wallet("w1",hop_address,f"Hop lanjutan · {destination}",chain=destination),
+            wallet("deposit",deposit_address,f"{receiving_pakd} deposit · {destination}","DIRECT_EXCHANGE_DEPOSIT",balance="7500",
+                platform=receiving_pakd,uid=target_uid,recovery_institution="PAKD",chain=destination,kyc_nik_masked=f"3273********{index:04d}")]
+        bridge_tx=chain_tx(f"bridge-{index}-pivot","bridge","landing","7500",180,chain=destination)
+        bridge_tx.update(edge_type="CROSS_CHAIN_BRIDGE",bridge_protocol_name=protocol,bridged_from_chain="ETHEREUM",
+            bridged_to_chain=destination,bridge_evidence_status="SIMULATED_CORRELATED_BRIDGE")
+        scenario["chain_ledger"]=[chain_tx(f"bridge-{index}-enter","w0","bridge","7500",150,chain="ETHEREUM"),
+            bridge_tx,chain_tx(f"bridge-{index}-after","landing","w1","7500",210,chain=destination),
+            chain_tx(f"bridge-{index}-loopback","w1","deposit","7500",260,chain=destination)]
+        bridge_presets.append(scenario)
+    return {s["id"]: s for s in (s1, s2, s3, s4, *bridge_presets)}
 
 SCENARIOS = fixtures()
 

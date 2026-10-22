@@ -59,7 +59,8 @@ def build_evidence_packet(graph, request):
         raise ValueError("Hasil live read-only tanpa handoff FNA terverifikasi tidak dapat menjadi tiket freeze otomatis")
     node = next(n for n in graph.nodes if n.id == request.target_node_id)
     evidence = {"iasc_ticket_id": graph.iasc_ticket_id, "fna_trail_id": graph.fna_trail_id, "trace_id": graph.trace_id,
-        "simulation": graph.simulation, "mirror_db_source": "SYNTHETIC_PAKD_MIRROR_DB_SQLITE",
+        "simulation": graph.simulation, "mirror_access": "SCOPED_PAKD_REST_API_DEMO",
+        "pakd_api_exchange_logs": [log.model_dump(mode="json") for log in graph.pakd_api_exchange_logs],
         "fna_handoff": graph.fna_handoff.model_dump(mode="json"),
         "nodes": [n.model_dump(mode="json") for n in graph.nodes], "edges": [e.model_dump(mode="json") for e in graph.edges],
         "pakd_trails": [r.model_dump(mode="json") for r in graph.pakd_trails],
