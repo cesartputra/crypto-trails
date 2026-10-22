@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse, JSONResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from schemas import CrossRailGraphResponse, FNAMoneyTrailHandoffInput, SendFreezeRequest, SimulateInstitutionDecisionInput, LiveWalletTrailInput, PAKDAPICallLog, TrailNode, TrailEdge
 from scenarios import SCENARIOS, get_scenario, scenario_catalog
-from services.etherscan_client import EtherscanClient, EtherscanAPIError
+from services.etherscan_client import EtherscanClient, EtherscanAPIError, _config
 from services.multichain_scanner import MultichainScanner, ScannerAPIError
 from services.pakd_api_consumer import PAKDAPIConsumer, PAKDAPIError
 from services.pakd_scoped_mirror_provider import router as pakd_mirror_router
@@ -99,8 +99,9 @@ async def health():
         mode = "ETHERSCAN" if client.api_key else "BLOCKSCOUT_PUBLIC"
     except ValueError:
         mode = "INVALID_ETHERSCAN_CONFIGURATION"
+    solana_mode = "SOLSCAN_PRO_API" if _config().get("SOLSCAN_API_KEY", "").strip() else "SOLANA_MAINNET_RPC"
     return {"status": "ok", "simulation": True, "live_provider": mode,
-        "dedicated_scanners": {"BTC": "MEMPOOL_SPACE_WITH_BLOCKSTREAM_FALLBACK", "SOLANA": "SOLANA_MAINNET_RPC", "EVM": mode},
+        "dedicated_scanners": {"BTC": "MEMPOOL_SPACE_WITH_BLOCKSTREAM_FALLBACK", "SOLANA": solana_mode, "EVM": mode},
         "mirror_access": "SCOPED_REST_API_ASGI_DEMO", "supported_chains": list(CHAIN_CONFIG), "governance_mode": "SIMULATED_DISPATCH_AND_INSTITUTION_DECISIONS",
         "fna_mode": "IMPORTED_HANDOFF_ONLY"}
 

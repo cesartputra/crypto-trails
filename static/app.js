@@ -164,6 +164,8 @@ function acceptGraph(graph) {
 function failTrace(error, live = false) {
   toast(error.message, true);
   $("#case-id").textContent = "PENELUSURAN BELUM TERSEDIA";
+  $("#executive-title").textContent = live ? "Pemindaian live belum tersedia" : "Penelusuran belum tersedia";
+  $("#executive-narrative").textContent = error.message;
   $("#warnings").textContent = `Penelusuran gagal: ${error.message} ${live ? "Tidak ada transaksi demo yang disisipkan sebagai hasil live." : "Tidak ada bukti atau tiket rekomendasi aktif untuk permintaan ini."}`;
   $("#warnings").hidden = false;
   log(`Penelusuran gagal: ${error.message}`);
@@ -209,7 +211,11 @@ async function traceLive() {
     const provider = graph.live_metadata?.provider || graph.live_metadata?.data_provider || "Explorer Multichain";
     const activity = graph.live_metadata?.activity || [];
     const count = graph.edges.filter(isLiveTransfer).length;
-    $("#live-status").textContent = payload.source_chain === "SOLANA" ? `${provider}: ${activity.length} signature tercatat, ${count} transfer SOL terurai. Aktivitas token/instruksi lain dapat dilihat melalui signature di detail akun.` : payload.source_chain === "BTC" ? `${provider}: ${count} relasi UTXO diamati. Output merupakan kemungkinan aliran; change dan pemiliknya belum diketahui.` : `${provider}: ${count} transfer asli ditampilkan. Kandidat pivot belum membuktikan perpindahan dana lintas chain.`;
+    if (payload.source_chain === "SOLANA") {
+      $("#live-status").textContent = provider === "SOLSCAN_PRO_API" ? `${scannerLabel(provider)}: ${count} transfer SOL native ditampilkan dari sampel terbaru; ${activity.length} signature transfer tercatat. Hasil ini tidak mencakup seluruh aktivitas token.` : `${provider}: ${activity.length} signature tercatat, ${count} transfer SOL terurai. Aktivitas token/instruksi lain dapat dilihat melalui signature di detail akun.`;
+    } else {
+      $("#live-status").textContent = payload.source_chain === "BTC" ? `${provider}: ${count} relasi UTXO diamati. Output merupakan kemungkinan aliran; change dan pemiliknya belum diketahui.` : `${provider}: ${count} transfer asli ditampilkan. Kandidat pivot belum membuktikan perpindahan dana lintas chain.`;
+    }
   } catch (error) {
     if (requestId !== state.request) return;
     failTrace(error, true);
@@ -219,7 +225,7 @@ async function traceLive() {
 
 function isLiveRecord(record) {
   const source = String(record?.metadata?.evidence_source || "").toUpperCase();
-  return record?.metadata?.simulation === false || record?.metadata?.is_live === true || (/ETHERSCAN|BLOCKSCOUT|MAINNET|MEMPOOL|BLOCKSTREAM|SOLANA_RPC/.test(source) && !/SIMULAT|FIXTURE|SEEDED/.test(source));
+  return record?.metadata?.simulation === false || record?.metadata?.is_live === true || (/ETHERSCAN|BLOCKSCOUT|MAINNET|MEMPOOL|BLOCKSTREAM|SOLANA_RPC|SOLSCAN/.test(source) && !/SIMULAT|FIXTURE|SEEDED/.test(source));
 }
 
 const chains = {
@@ -242,7 +248,7 @@ function isCandidateEdge(record) {
 }
 function isBridgeEdge(record) { return /CROSS_CHAIN|BRIDGE_PIVOT/.test(record?.edge_type || ""); }
 function scannerLabel(value) {
-  const labels = { MEMPOOL_SPACE: "Mempool.space", BLOCKSTREAM_ESPLORA: "Blockstream Esplora", SOLANA_MAINNET_RPC: "Solana Mainnet RPC", ETHERSCAN_V2: "Etherscan V2", SCENARIO_FIXTURE: "Skenario sintetis" };
+  const labels = { MEMPOOL_SPACE: "Mempool.space", BLOCKSTREAM_ESPLORA: "Blockstream Esplora", SOLANA_MAINNET_RPC: "Solana Mainnet RPC", SOLSCAN_PRO_API: "Solscan Pro API v2", ETHERSCAN_V2: "Etherscan V2", SCENARIO_FIXTURE: "Skenario sintetis" };
   return String(value || "").split(",").map((name) => labels[name.trim()] || friendly(name.trim())).join(" · ");
 }
 function isLiveTransfer(record) {

@@ -79,7 +79,7 @@ class EtherscanAPIError(RuntimeError):
 
 
 def _config():
-    keys = {"ETHERSCAN_API_KEY", "ETHERSCAN_BASE_URL", "ETHERSCAN_FALLBACK_EXPLORER_URL"}
+    keys = {"ETHERSCAN_API_KEY", "ETHERSCAN_BASE_URL", "ETHERSCAN_FALLBACK_EXPLORER_URL", "SOLSCAN_API_KEY", "SOLSCAN_BASE_URL"}
     values = {}
     if ENV_FILE.is_file():
         for raw in ENV_FILE.read_text(encoding="utf-8").splitlines():

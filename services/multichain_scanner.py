@@ -10,12 +10,14 @@ import httpx
 
 from schemas import TrailEdge, TrailNode
 from services.chains import CHAIN_CONFIG, normalize_chain, is_valid_address, is_valid_tx_hash, explorer_address_url, explorer_tx_url
-from services.etherscan_client import EtherscanClient, _throttle
+from services.etherscan_client import EtherscanClient, _config, _throttle
 from services.pakd_api_consumer import PAKDAPIConsumer
 
 D = Decimal
 BTC_PROVIDERS = (("MEMPOOL_SPACE", "https://mempool.space/api"), ("BLOCKSTREAM_ESPLORA", "https://blockstream.info/api"))
 SOLANA_RPC = "https://api.mainnet-beta.solana.com"
+SOLSCAN_BASE_URL = "https://pro-api.solscan.io/v2.0"
+SOLSCAN_NATIVE_TOKEN = "So11111111111111111111111111111111111111111"
 SYSTEM_PROGRAM = "11111111111111111111111111111111"
 
 
@@ -32,6 +34,10 @@ class _UnsupportedSolanaVersion(ScannerAPIError):
 
 
 def _uint(value, maximum=2**64 - 1):
+    if isinstance(value, D):
+        if not value.is_finite() or not 0 <= value <= maximum or value != value.to_integral_value():
+            raise ValueError('Nilai scanner wajib integer dalam batas yang didukung')
+        value = int(value)
     if isinstance(value, bool) or not isinstance(value, (int, str)) or not str(value).isdigit():
         raise ValueError('Nilai scanner wajib integer non-negatif')
     result = int(value)
@@ -86,6 +92,16 @@ class MultichainScanner:
         native = CHAIN_CONFIG[chain]['native_symbol']
         if token_filter not in {'ALL', 'ETH', native}:
             raise ValueError('Scanner ini hanya mendukung aset native chain yang dipilih')
+        solscan_key, solscan_url = '', SOLSCAN_BASE_URL
+        if chain == 'SOLANA':
+            config = _config()
+            solscan_key = config.get('SOLSCAN_API_KEY', '').strip()
+            if solscan_key:
+                solscan_url = (config.get('SOLSCAN_BASE_URL') or SOLSCAN_BASE_URL).strip().rstrip('/')
+                if len(solscan_key) > 2048 or any(ord(char) < 33 or ord(char) > 126 for char in solscan_key):
+                    raise ScannerAPIError('Format SOLSCAN_API_KEY tidak valid; gunakan key dari Solscan API Management')
+                if solscan_url != SOLSCAN_BASE_URL:
+                    raise ScannerAPIError('SOLSCAN_BASE_URL harus https://pro-api.solscan.io/v2.0 tanpa query atau kredensial')
         state = {'requests': 0, 'truncated': False, 'providers': set(), 'activity': [], 'seed': wallet_address}
         warnings = ['LIVE READ ONLY: aktivitas publik bukan bukti kepemilikan, taint atau nilai recovery.',
             'Identitas pada respons Scoped Mirror API PAKD merupakan seed sintetis demo.']
@@ -96,6 +112,8 @@ class MultichainScanner:
                 async with httpx.AsyncClient(transport=self.transport, timeout=10, follow_redirects=False) as client:
                     if chain == 'BTC':
                         nodes, edges = await self._bitcoin(client, wallet_address, max_hops, direction, state, warnings)
+                    elif solscan_key:
+                        nodes, edges = await self._solscan(client, wallet_address, max_hops, direction, state, warnings, solscan_key, solscan_url)
                     else:
                         nodes, edges = await self._solana(client, wallet_address, max_hops, direction, state, warnings)
         except TimeoutError:
@@ -114,25 +132,31 @@ class MultichainScanner:
                 'page_size': self.PAGE_SIZE, 'requests_made': state['requests'], 'truncated': state['truncated'],
                 'activity': state['activity'], 'fetched_at': datetime.now(timezone.utc).isoformat()}}
 
-    async def _json(self, client, state, method, url, payload=None):
+    async def _json(self, client, state, method, url, payload=None, *, params=None, headers=None, provider=None):
         if state['requests'] >= self.MAX_REQUESTS:
             state['truncated'] = True
             raise ScannerAPIError('Budget request scanner tercapai; coba satu hop')
         state['requests'] += 1
         await _throttle()
         try:
-            async with client.stream(method, url, json=payload) as response:
+            async with client.stream(method, url, json=payload, params=params, headers=headers) as response:
+                if provider == 'Solscan Pro API':
+                    messages = {401: 'autentikasi gagal (HTTP 401); periksa SOLSCAN_API_KEY dan aktivasi key',
+                        403: 'akses ditolak (HTTP 403); periksa paket API, aktivasi key, atau pembatasan IP',
+                        429: 'batas permintaan/kuota tercapai (HTTP 429); tunggu lalu coba kembali'}
+                    if response.status_code in messages:
+                        raise ScannerAPIError(provider + ': ' + messages[response.status_code])
                 response.raise_for_status()
                 body = bytearray()
                 async for chunk in response.aiter_bytes():
                     body.extend(chunk)
                     if len(body) > 2_000_000:
                         raise ScannerAPIError('Respons scanner melebihi batas aman')
-            return json.loads(body)
+            return json.loads(body, parse_float=D)
         except httpx.HTTPError:
-            raise _ProviderUnavailable('Scanner publik gagal diakses; tidak ada data simulasi pengganti') from None
+            raise _ProviderUnavailable((provider or 'Scanner publik') + ' gagal diakses; periksa koneksi atau ketersediaan provider. Tidak ada data simulasi pengganti') from None
         except (ValueError, TypeError):
-            raise ScannerAPIError('Scanner publik gagal diakses atau respons tidak valid; tidak ada data simulasi pengganti') from None
+            raise ScannerAPIError((provider or 'Scanner publik') + ' mengembalikan respons tidak valid; tidak ada data simulasi pengganti') from None
 
     async def _wallet(self, nodes, chain, address, hop, provider, state):
         key = chain + ':' + address
@@ -276,9 +300,91 @@ class MultichainScanner:
             warnings.append('Sebagian transaksi BTC belum dikonfirmasi dan dapat berubah; timestamp blok belum tersedia.')
         return nodes, edges
 
+    async def _solscan_get(self, client, state, endpoint, params, api_key, base_url):
+        payload = await self._json(client, state, 'GET', base_url + endpoint, params=params,
+            headers={'token': api_key, 'accept': 'application/json'}, provider='Solscan Pro API')
+        if not isinstance(payload, dict) or payload.get('success') is not True or 'data' not in payload:
+            raise ScannerAPIError('Solscan Pro API menolak permintaan atau mengembalikan respons tidak valid; periksa key dan paket API')
+        state['providers'].add('SOLSCAN_PRO_API')
+        return payload['data']
+
+    async def _solscan(self, client, seed, max_hops, direction, state, warnings, api_key, base_url):
+        provider = 'SOLSCAN_PRO_API'
+        nodes, edges, visited, seen, activity_signatures = {}, [], set(), set(), set()
+        queue = deque([(seed, 0)])
+        warnings.append('Solscan Pro API: maksimal 10 transfer native SOL terbaru/alamat; SPL-token, swap, dan atribusi dana laporan belum didukung.')
+        wallet = await self._wallet(nodes, 'SOLANA', seed, 0, provider, state)
+        balance = await self._solscan_get(client, state, '/account/detail', {'address': seed}, api_key, base_url)
+        try:
+            if not isinstance(balance, dict) or balance.get('account') != seed:
+                raise ValueError()
+            wallet.balance_crypto = D(_uint(balance['lamports'])).scaleb(-9)
+        except (ValueError, TypeError, KeyError):
+            raise ScannerAPIError('Saldo Solscan Pro API tidak valid atau tidak terikat pada alamat yang diminta') from None
+        wallet.metadata['balance_status'] = 'FETCHED'
+        while queue:
+            address, depth = queue.popleft()
+            if address in visited or depth >= max_hops:
+                continue
+            if state['requests'] >= self.MAX_REQUESTS:
+                state['truncated'] = True
+                break
+            visited.add(address)
+            params = {'address': address, 'token': SOLSCAN_NATIVE_TOKEN, 'activity_type[]': 'ACTIVITY_SPL_TRANSFER',
+                'page': 1, 'page_size': self.PAGE_SIZE, 'sort_by': 'block_time', 'sort_order': 'desc', 'exclude_amount_zero': 'true'}
+            if direction == 'OUTBOUND':
+                params['flow'] = 'out'
+            rows = await self._solscan_get(client, state, '/account/transfer', params, api_key, base_url)
+            if not isinstance(rows, list):
+                raise ScannerAPIError('Daftar transfer Solscan Pro API tidak valid')
+            state['truncated'] |= len(rows) >= self.PAGE_SIZE
+            occurrences = {}
+            for index, row in enumerate(rows[:self.PAGE_SIZE]):
+                try:
+                    if not isinstance(row, dict) or row.get('activity_type') != 'ACTIVITY_SPL_TRANSFER' or row.get('token_address') != SOLSCAN_NATIVE_TOKEN or _uint(row.get('token_decimals')) != 9:
+                        raise ValueError()
+                    signature, source, target = row['trans_id'], row['from_address'], row['to_address']
+                    if not is_valid_tx_hash('SOLANA', signature) or not is_valid_address('SOLANA', source) or not is_valid_address('SOLANA', target):
+                        raise ValueError()
+                    if source != address and (direction != 'BOTH' or target != address):
+                        continue
+                    lamports = _uint(row['amount'])
+                    timestamp = _time(row['block_time'])
+                    if not lamports or timestamp is None:
+                        continue
+                    identity = (signature, source, target, lamports, row['block_time'])
+                    occurrences[identity] = occurrences.get(identity, 0) + 1
+                    key = (*identity, occurrences[identity])
+                    if key in seen:
+                        continue
+                    if len(edges) >= self.MAX_EDGES:
+                        state['truncated'] = True
+                        break
+                    sender = await self._wallet(nodes, 'SOLANA', source, depth, provider, state)
+                    recipient = await self._wallet(nodes, 'SOLANA', target, depth + 1, provider, state)
+                    if not sender or not recipient:
+                        continue
+                    seen.add(key)
+                    edges.append(TrailEdge(id='solscan-' + sha256(str(key).encode()).hexdigest()[:24],
+                        source=sender.id, target=recipient.id, edge_type='SOLANA_NATIVE_TRANSFER',
+                        label=f'{D(lamports).scaleb(-9)} SOL', crypto_amount=D(lamports).scaleb(-9), asset='SOL', chain='SOLANA',
+                        tx_hash=signature, timestamp=timestamp, explorer_url=explorer_tx_url('SOLANA', signature),
+                        chain_family='SOLANA', scanner_provider=provider, chain_branch='SOLANA',
+                        metadata={'simulation': False, 'is_live': True, 'evidence_source': provider + '_LIVE',
+                            'scanner_provider': provider, 'chain_family': 'SOLANA', 'chain_branch': 'SOLANA',
+                            'provider_row_index': index, 'taint_status': 'UNKNOWN'}))
+                    if signature not in activity_signatures:
+                        activity_signatures.add(signature)
+                        state['activity'].append({'signature': signature, 'explorer_url': explorer_tx_url('SOLANA', signature),
+                            'timestamp': timestamp.isoformat(), 'status': 'PARSED_NATIVE_TRANSFER'})
+                    queue.append((target if source == address else source, depth + 1))
+                except (ValueError, TypeError, KeyError, OverflowError, OSError):
+                    warnings.append('Transfer Solscan Pro API tidak valid atau bukan transfer native SOL dilewati.')
+        return nodes, edges
+
     async def _rpc(self, client, state, method, params):
         payload = await self._json(client, state, 'POST', SOLANA_RPC,
-            {'jsonrpc': '2.0', 'id': state['requests'] + 1, 'method': method, 'params': params})
+            {'jsonrpc': '2.0', 'id': state['requests'] + 1, 'method': method, 'params': params}, provider='Solana Mainnet RPC')
         if method == 'getTransaction' and isinstance(payload, dict) and isinstance(payload.get('error'), dict) and payload['error'].get('code') == -32015:
             raise _UnsupportedSolanaVersion('Versi transaksi belum didukung decoder native SOL')
         if not isinstance(payload, dict) or payload.get('error') is not None or 'result' not in payload:

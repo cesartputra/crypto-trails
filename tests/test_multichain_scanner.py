@@ -42,6 +42,7 @@ class Consumer:
 
 @pytest.fixture(autouse=True)
 def no_throttle(monkeypatch):
+    monkeypatch.setenv('SOLSCAN_API_KEY', '')
     async def immediate():
         pass
     monkeypatch.setattr(module, '_throttle', immediate)

@@ -33,7 +33,7 @@ flowchart LR
   C -->|HTTP inflow lookup| A
   A -->|chains_used + withdrawals| D[Sebaran multi-chain]
   D --> B[BTC · Mempool / Blockstream]
-  D --> S[Solana · Mainnet JSON-RPC]
+  D --> S[Solana · Solscan Pro API / Mainnet RPC]
   D --> E[EVM · Etherscan V2 / explorer per chain]
   B --> R[Reverse lookup API PAKD]
   S --> R
@@ -86,13 +86,15 @@ Pilih chain dan alamat yang sesuai, lalu jalankan live scanner. Contoh Solana be
 | Family | Provider | Bukti explorer |
 | --- | --- | --- |
 | Bitcoin | Mempool.space REST; fallback Blockstream Esplora jika provider utama gagal | mempool.space/address/... dan /tx/... |
-| Solana | api.mainnet-beta.solana.com JSON-RPC | solscan.io/account/... dan /tx/... |
+| Solana | Solscan Pro API v2 bila key terisi; Mainnet JSON-RPC bila key kosong | solscan.io/account/... dan /tx/... |
 | EVM | Etherscan V2 `chainid` sesuai jaringan; fallback allowlist per chain tanpa key | Etherscan, BscScan, Arbiscan, PolygonScan, BaseScan, Optimism explorer |
 | TRON | Fixture TRC-20 sintetis saja | Tidak ada live TRON scanner |
 
 **Bitcoin:** riwayat address memakai `/address/{address}/txs`. Bitcoin adalah UTXO: satu transaksi dapat memiliki banyak input, output dan change. Graph menampilkan transaksi dan outputnya tanpa mengklaim bahwa setiap output milik pelaku. Jumlah output bukan nominal dana laporan atau saldo recovery. Alamat dan hash divalidasi, termasuk checksum address.
 
-**Solana:** `getSignaturesForAddress` dan `getBalance` mengambil aktivitas serta saldo native. `getTransaction` dengan `jsonParsed` mengurai transfer native SOL System Program. Signature hanya membuktikan akun direferensikan oleh transaksi; bukan otomatis transfer keluar. Transaksi gagal tidak dipakai sebagai transfer. Aktivitas yang belum dapat diurai tetap ditampilkan sebagai daftar signature dengan link, tanpa membuat edge palsu. SPL-token tracing lengkap bukan bagian scanner native ini.
+**Solana dengan Solscan:** `GET /v2.0/account/detail` mengambil saldo lamports dan `GET /v2.0/account/transfer` mengambil sampel transfer native SOL. API key dikirim dalam header `token` hanya ke host resmi Solscan. Filter native SOL memakai alamat penanda dari dokumentasi Solscan, bukan mint Wrapped SOL. Nominal mentah dibagi 10^9 dengan Decimal. Signature, alamat, token, arah dan nominal diperiksa sebelum dijadikan edge; transfer tetap bukan bukti kepemilikan atau atribusi dana korban. SPL-token tracing lengkap belum termasuk.
+
+**Solana tanpa key:** `getSignaturesForAddress` dan `getBalance` mengambil aktivitas serta saldo native dari RPC publik. `getTransaction` dengan `jsonParsed` mengurai transfer native SOL System Program. Signature hanya membuktikan akun direferensikan oleh transaksi; bukan otomatis transfer keluar. Transaksi gagal tidak dipakai sebagai transfer. Aktivitas yang belum dapat diurai tetap ditampilkan sebagai daftar signature dengan link, tanpa membuat edge palsu.
 
 **EVM:** mengambil `txlist`, `tokentx`, dan saldo native. Filter USDT/USDC mengikat kontrak kanonis per chain. `ETH` pada filter berarti native coin jaringan (ETH, BNB, POL). Key Etherscan berlaku sesuai akses/kuota akun. BSC memerlukan key karena tidak ada fallback BSC yang diasumsikan. Fallback Ethereum tidak digunakan sebagai pengganti jaringan lain.
 
@@ -114,7 +116,9 @@ SOLSCAN_BASE_URL=https://pro-api.solscan.io/v2.0
 
 `.env` dibaca otomatis dari folder `main.py`; environment shell lebih utama. Key opsional UI hanya berlaku pada request itu. BTC dan Solana tidak menerima key Etherscan. Key tidak masuk ke graph, log API PAKD, ekspor atau respons error validasi. `.env` diabaikan Git.
 
-Variabel `SOLSCAN_API_KEY` dan `SOLSCAN_BASE_URL` disiapkan untuk integrasi [Solscan Pro API v2](https://pro-api.solscan.io/pro-api-docs/v2.0/reference/v2-account-detail). Adapter Solscan belum dihubungkan; mengisi key ini belum mengubah scanner Solana yang masih memakai Mainnet RPC publik. Simpan key hanya di `.env` lokal; `.env.example` tetap kosong.
+Isi `SOLSCAN_API_KEY` dengan key [Solscan Pro API v2](https://pro-api.solscan.io/pro-api-docs/v2.0/docs) yang aktif, lalu restart server. Key terisi memilih adapter Solscan; key kosong memilih RPC publik. `SOLSCAN_BASE_URL` hanya menerima endpoint HTTPS resmi `https://pro-api.solscan.io/v2.0`. Environment shell lebih utama daripada `.env`. Simpan key hanya di `.env` lokal; `.env.example` tetap kosong.
+
+Error Solscan dibedakan: HTTP 401 berarti autentikasi ditolak (periksa key/aktivasi), HTTP 403 berarti akses ditolak (periksa izin/paket), HTTP 429 berarti batas permintaan tercapai. Kegagalan jaringan diberi nama provider. Saat Solscan terkonfigurasi tetapi gagal, scanner tidak diam-diam mengganti sumber dengan RPC atau data demo. Endpoint `account/detail` berisi identitas teknis/saldo akun; riwayat transfer diambil dari endpoint terpisah `account/transfer`.
 
 Layanan publik dapat menolak permintaan atau terkena rate limit. Scanner mengembalikan error yang jelas bila provider gagal; hasil demo deterministik hanya berasal dari mode skenario. Akses live semua provider/key belum otomatis terjamin oleh keberhasilan tes mock.
 
@@ -158,6 +162,8 @@ Jalankan `python -m pytest -q`, `node tests/frontend_theme_selfcheck.cjs`, dan `
 
 Smoke publik 22 Oktober 2026 berhasil mengakses Mempool.space, Solana Mainnet RPC dan Ethereum Blockscout. Pada sampel yang diperiksa tidak ada outbound native yang dapat diurai; hasil kosong bukan bukti tidak adanya transaksi sepanjang riwayat. Solana tetap mencatat signature gagal, instruksi yang tidak didukung serta versi transaksi yang belum didukung tanpa mengarang transfer. Akses Etherscan dengan key/kuota akun dan konektor PAKD produksi belum diuji langsung.
 
+Uji langsung Solscan dengan konfigurasi lokal pada tanggal tersebut mendapat HTTP 401; jalur sukses adapter diverifikasi dengan respons HTTP mock sesuai kontrak API. Autentikasi akun Solscan perlu diperbaiki sebelum transfer live Solscan dapat diverifikasi.
+
 State lokal maksimum 128 trace/1 jam dan database in-memory hilang saat restart. Tidak ada autentikasi lembaga, mTLS, callback mitra produksi atau audit durable. Jalankan pada loopback dengan data sintetis. Integrasi produksi memerlukan perjanjian akses PAKD, dasar pemrosesan, otorisasi perkara, retensi dan monitoring; biaya demo tidak mencerminkan biaya operasi produksi.
 
-Referensi: [Mempool REST](https://mempool.space/docs/api/rest), [Blockstream Esplora](https://github.com/Blockstream/esplora/blob/master/API.md), [Solana signatures](https://solana.com/docs/rpc/http/getsignaturesforaddress), [Solana transactions](https://solana.com/docs/rpc/http/gettransaction), [Etherscan V2](https://docs.etherscan.io/introduction). Dokumentasi diperiksa pada 22 Oktober 2026.
+Referensi: [Mempool REST](https://mempool.space/docs/api/rest), [Blockstream Esplora](https://github.com/Blockstream/esplora/blob/master/API.md), [Solana signatures](https://solana.com/docs/rpc/http/getsignaturesforaddress), [Solana transactions](https://solana.com/docs/rpc/http/gettransaction), [Solscan account detail](https://pro-api.solscan.io/pro-api-docs/v2.0/reference/v2-account-detail), [Solscan account transfer](https://pro-api.solscan.io/pro-api-docs/v2.0/reference/v2-account-transfer), [Etherscan V2](https://docs.etherscan.io/introduction). Dokumentasi diperiksa pada 22 Oktober 2026.
