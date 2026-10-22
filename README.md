@@ -108,9 +108,13 @@ Salin `.env.example` ke `.env` bila belum ada:
 ETHERSCAN_API_KEY=
 ETHERSCAN_BASE_URL=https://api.etherscan.io/v2/api
 ETHERSCAN_FALLBACK_EXPLORER_URL=https://eth.blockscout.com/api
+SOLSCAN_API_KEY=
+SOLSCAN_BASE_URL=https://pro-api.solscan.io/v2.0
 ```
 
 `.env` dibaca otomatis dari folder `main.py`; environment shell lebih utama. Key opsional UI hanya berlaku pada request itu. BTC dan Solana tidak menerima key Etherscan. Key tidak masuk ke graph, log API PAKD, ekspor atau respons error validasi. `.env` diabaikan Git.
+
+Variabel `SOLSCAN_API_KEY` dan `SOLSCAN_BASE_URL` disiapkan untuk integrasi [Solscan Pro API v2](https://pro-api.solscan.io/pro-api-docs/v2.0/reference/v2-account-detail). Adapter Solscan belum dihubungkan; mengisi key ini belum mengubah scanner Solana yang masih memakai Mainnet RPC publik. Simpan key hanya di `.env` lokal; `.env.example` tetap kosong.
 
 Layanan publik dapat menolak permintaan atau terkena rate limit. Scanner mengembalikan error yang jelas bila provider gagal; hasil demo deterministik hanya berasal dari mode skenario. Akses live semua provider/key belum otomatis terjamin oleh keberhasilan tes mock.
 
