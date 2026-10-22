@@ -229,20 +229,28 @@ function isLiveRecord(record) {
 }
 
 const chains = {
-  BTC: { badge: "BTC", color: "#f5a14d", host: "mempool.space", family: "BITCOIN" },
-  SOLANA: { badge: "SOL", color: "#b094ff", host: "solscan.io", family: "SOLANA" },
-  ETHEREUM: { badge: "ETH", color: "#619cf8", host: "etherscan.io", id: 1 },
-  BSC: { badge: "BSC", color: "#efcf65", host: "bscscan.com", id: 56 },
-  POLYGON: { badge: "POLY", color: "#bc8cff", host: "polygonscan.com", id: 137 },
-  ARBITRUM: { badge: "ARB", color: "#6eb9f6", host: "arbiscan.io", id: 42161 },
-  OPTIMISM: { badge: "OP", color: "#f38193", host: "optimistic.etherscan.io", id: 10 },
-  BASE: { badge: "BASE", color: "#6b99ff", host: "basescan.org", id: 8453 },
-  TRON: { badge: "TRON", color: "#f39185", host: "tronscan.org", id: null },
+  BTC: { badge: "BTC", color: "#f5a14d", host: "mempool.space", family: "BITCOIN", icon: "/static/icons/web3icons/bitcoin.svg" },
+  SOLANA: { badge: "SOL", color: "#b094ff", host: "solscan.io", family: "SOLANA", icon: "/static/icons/web3icons/solana.svg" },
+  ETHEREUM: { badge: "ETH", color: "#619cf8", host: "etherscan.io", id: 1, icon: "/static/icons/web3icons/ethereum.svg" },
+  BSC: { badge: "BSC", color: "#efcf65", host: "bscscan.com", id: 56, icon: "/static/icons/web3icons/binance-smart-chain.svg" },
+  POLYGON: { badge: "POLY", color: "#bc8cff", host: "polygonscan.com", id: 137, icon: "/static/icons/web3icons/polygon.svg" },
+  ARBITRUM: { badge: "ARB", color: "#6eb9f6", host: "arbiscan.io", id: 42161, icon: "/static/icons/web3icons/arbitrum-one.svg" },
+  OPTIMISM: { badge: "OP", color: "#f38193", host: "optimistic.etherscan.io", id: 10, icon: "/static/icons/web3icons/optimism.svg" },
+  BASE: { badge: "BASE", color: "#6b99ff", host: "basescan.org", id: 8453, icon: "/static/icons/web3icons/base.svg" },
+  TRON: { badge: "TRON", color: "#f39185", host: "tronscan.org", id: null, icon: "/static/icons/web3icons/tron.svg" },
 };
 function chainName(value) {
   return ({ BITCOIN: "BTC", SOL: "SOLANA", ETH: "ETHEREUM", ETHEREUM_ERC20: "ETHEREUM", BSC_BEP20: "BSC", TRON_TRC20: "TRON" })[String(value || "").toUpperCase()] || String(value || "ETHEREUM").toUpperCase();
 }
 function chainInfo(record) { return chains[chainName(typeof record === "string" ? record : record?.chain || record?.metadata?.chain)] || null; }
+function chainIcon(record) {
+  const source = chainInfo(record)?.icon;
+  if (!source) return null;
+  const icon = el("img", "chain-icon");
+  icon.src = source; icon.alt = ""; icon.width = 20; icon.height = 20;
+  icon.setAttribute("aria-hidden", "true");
+  return icon;
+}
 function isCandidateEdge(record) {
   return /CANDIDATE|UNVERIFIED/.test(String(record?.metadata?.correlation_status || "")) || record?.metadata?.is_candidate === true || /CANDIDATE/.test(record?.edge_type || "") || (record?.edge_type === "CROSS_CHAIN_BRIDGE" && isLiveRecord(record) && record?.metadata?.bridge_link_verified !== true);
 }
@@ -346,7 +354,11 @@ function renderCaseSummary() {
   $("#chain-dispersal-cards").replaceChildren(...cards.map((row) => {
     const chain = row.canonical, info = chainInfo(chain), button = el("button", `chain-card${state.chainFilter === chain ? " active" : ""}`);
     button.type = "button"; button.style.setProperty("--chain-color", info?.color || "#ad93ff"); button.dataset.chain = chain; button.setAttribute("aria-pressed", String(state.chainFilter === chain));
-    button.append(el("span", "chain-card-title", `${info?.badge || chain} · ${chain === "BTC" ? "Bitcoin" : chain === "SOLANA" ? "Solana" : friendly(chain)}`));
+    const title = el("span", "chain-card-title");
+    const icon = chainIcon(chain);
+    if (icon) title.append(icon);
+    title.append(el("span", "", `${info?.badge || chain} · ${chain === "BTC" ? "Bitcoin" : chain === "SOLANA" ? "Solana" : friendly(chain)}`));
+    button.append(title);
     button.append(el("strong", "", row.fiat_value_idr !== undefined ? idr(row.fiat_value_idr) : `${graph.nodes.filter((node) => node.node_zone === "ONCHAIN_WALLET" && chainName(node.chain || node.metadata?.chain) === chain).length} simpul publik`));
     button.append(el("span", "chain-card-amount", row.crypto_amount !== undefined ? `${number(row.crypto_amount, 6)} ${row.token_symbol}` : scannerLabel(row.scanner_provider)));
     if (row.crypto_amount !== undefined) button.append(el("span", "chain-card-scanner", `Scanner: ${scannerLabel(row.scanner_provider || "SCENARIO_FIXTURE")}`));
@@ -357,7 +369,10 @@ function renderCaseSummary() {
   }));
   const filters = ["ALL", "BTC", "SOLANA", "ETHEREUM", ...available.filter((chain) => !["BTC", "SOLANA", "ETHEREUM"].includes(chain))];
   $("#chain-filters").replaceChildren(el("span", "filter-caption", "LIHAT JALUR"), ...filters.map((chain) => {
-    const button = el("button", state.chainFilter === chain ? "active" : "", chain === "ALL" ? "Semua Chain" : chain);
+    const button = el("button", state.chainFilter === chain ? "active" : "");
+    const icon = chain === "ALL" ? null : chainIcon(chain);
+    if (icon) button.append(icon);
+    button.append(el("span", "", chain === "ALL" ? "Semua Chain" : chain));
     button.type = "button"; button.dataset.chain = chain; button.disabled = chain !== "ALL" && !available.includes(chain); button.setAttribute("aria-pressed", String(state.chainFilter === chain));
     button.addEventListener("click", () => setChainFilter(chain)); return button;
   }));
@@ -482,7 +497,8 @@ function layoutNodes() {
   for (const lane of state.lanes) {
     const info = chainInfo(lane.chain);
     labels.push(svgEl("rect", { x: sharedWidth + 8, y: lane.top, width: state.baseWidth - sharedWidth - 20, height: lane.height, rx: 14, class: "swimlane-bg", fill: info?.color, "fill-opacity": .035, stroke: info?.color, "stroke-opacity": .18 }));
-    labels.push(svgEl("text", { x: sharedWidth + 25, y: lane.top + 25, class: "swimlane-heading", fill: info?.color }, `${lane.chain} · ${lane.chain === "BTC" ? "Bitcoin Scanner" : lane.chain === "SOLANA" ? "Solana Scanner" : "EVM Scanner"}`));
+    if (info?.icon) labels.push(svgEl("image", { href: info.icon, x: sharedWidth + 23, y: lane.top + 9, width: 24, height: 24, class: "chain-lane-icon", "clip-path": "url(#web3icon-round)", "aria-hidden": "true" }));
+    labels.push(svgEl("text", { x: sharedWidth + (info?.icon ? 57 : 25), y: lane.top + 25, class: "swimlane-heading", fill: info?.color }, `${lane.chain} · ${lane.chain === "BTC" ? "Bitcoin Scanner" : lane.chain === "SOLANA" ? "Solana Scanner" : "EVM Scanner"}`));
   }
   $("#swimlanes").replaceChildren(...labels);
 }
@@ -550,7 +566,11 @@ function renderGraph() {
     const group = svgEl("g", { class: `node${selected ? " selected" : ""}`, transform: `translate(${x} ${y})`, "data-node-id": node.id, tabindex: 0, role: "button", "aria-label": `${node.label}. ${friendly(node.node_type)}. Tampilkan detail.`, "aria-pressed": String(selected) });
     group.append(svgEl("circle", { class: "node-halo", r: initial ? 39 : 35, fill: "none", stroke: theme.color, "stroke-width": initial ? 1.5 : .7, opacity: initial ? .6 : .2 }));
     group.append(svgEl("circle", { class: "node-core", r: 26, fill: theme.dark, stroke: lock ? decisionTheme.color : theme.color, "stroke-width": 1.2 }));
-    group.append(svgEl("text", { class: "node-icon", y: 1, fill: theme.color }, theme.icon));
+    if (node.node_zone === "ONCHAIN_WALLET" && chain?.icon) {
+      group.append(svgEl("image", { href: chain.icon, x: -20, y: -20, width: 40, height: 40, class: "node-chain-icon", "clip-path": "url(#web3icon-round)", "aria-hidden": "true" }));
+    } else {
+      group.append(svgEl("text", { class: "node-icon", y: 1, fill: theme.color }, theme.icon));
+    }
     if (initial) group.append(svgEl("text", { class: "initial-label", y: -52 }, "WALLET AWAL"));
     if (lock) {
       group.append(svgEl("circle", { cx: 23, cy: -21, r: 10, fill: "#163d2d", stroke: "#4caf81", "stroke-width": .8 }));

@@ -65,6 +65,8 @@ Log API bersifat per trace: endpoint, request, status HTTP, latency, scoped fiel
 
 Kanvas memakai swimlane horizontal per chain, dengan konteks FNA/PAKD bersama di sisi kiri. Bukti dan API JSON dipisahkan dari ringkasan. Tema Light/Dark di header disimpan dalam localStorage; kunjungan pertama mengikuti preferensi sistem. API key tidak disimpan di localStorage.
 
+Ikon pada node on-chain, judul swimlane, kartu dan filter memakai SVG lokal dari [0xa3k5/web3icons](https://github.com/0xa3k5/web3icons), commit `3cce0f390cf902f204a1b3d52f485bcc95d2fe9e`. Aset untuk sembilan chain berada di `static/icons/web3icons/`, beserta atribusi dan lisensi MIT. Tidak ada dependensi npm atau CDN baru. Simbol institusi/peran tetap dipakai pada node bank/PAKD; logo jaringan bukan bukti identitas pemilik wallet.
+
 ## Kasus default: Rp180 juta tersebar ke tiga chain
 
 **BNI → mule BCA → VA Tokocrypto → tiga withdrawal:**
