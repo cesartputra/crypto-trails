@@ -85,3 +85,27 @@ def test_health_schema_and_offline_assets(client):
     reference = schema["paths"]["/api/v1/trail/trace-report"]["post"]["requestBody"]["content"]["application/json"]["schema"]["$ref"]
     required = schema["components"]["schemas"][reference.rsplit("/", 1)[-1]]["required"]
     assert {"iasc_ticket_id", "fna_trail_id", "rrn_reference_number", "pakd_gateway_va_or_account"} <= set(required)
+
+
+def test_manual_handoff_queries_existing_mirror_without_claiming_verified_fna(client,scenarios):
+    handoff = dict(scenarios['direct-va-loopback']['handoff'])
+    handoff.pop('scenario_id')
+    graph = client.post('/api/v1/trail/trace-report',json=handoff).json()
+    gateway = next(node for node in graph['nodes'] if node['id']=='gateway')
+    match = gateway['metadata']['mirror_deposit']
+    assert match['user_uid'] and match['initial_wallet_address'].startswith('0x')
+    assert match['simulation'] is True
+    assert graph['governance_requests'] == [] and graph['pakd_trails'] == []
+    assert float(graph['total_traced_idr']) == 0
+    assert all(node.get('address') is None for node in graph['nodes'])
+    handoff['rrn_reference_number'] = 'NO-MATCH-RRN'
+    graph = client.post('/api/v1/trail/trace-report',json=handoff).json()
+    assert all('mirror_deposit' not in node['metadata'] for node in graph['nodes'])
+
+
+def test_tron_address_case_must_not_resolve_another_address(client,trace):
+    graph=trace('p2p-full-cycle')
+    source=next(node for node in graph['nodes'] if node.get('address'))
+    response=client.get(f"/api/v1/trail/address/{source['address'].lower()}/expand",params={
+        'trace_id':graph['trace_id'],'chain':source['chain']})
+    assert response.status_code == 404

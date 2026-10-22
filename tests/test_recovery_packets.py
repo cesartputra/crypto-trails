@@ -45,3 +45,11 @@ def test_unsupported_issuer_network_pair_rejected(trace, asset, chain):
     node.chain = chain
     with pytest.raises(ValueError):
         build_evidence_packet(graph, request)
+
+
+def test_live_read_only_graph_cannot_be_used_as_automatic_freeze_evidence(trace):
+    graph, request, _ = issuer_target(trace, 'p2p-dex-cold-wallet')
+    graph.simulation = False
+    graph.fna_handoff = None
+    with pytest.raises(ValueError, match='read-only'):
+        build_evidence_packet(graph, request)

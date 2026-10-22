@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.delenv("ARKHAM_API_KEY", raising=False)
+    monkeypatch.delenv("ETHERSCAN_API_KEY", raising=False)
     from main import app
 
     with TestClient(app) as session:

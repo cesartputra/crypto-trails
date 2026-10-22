@@ -1,15 +1,19 @@
-"""PAKD Trails: match a FNA handoff to internal exchange intake, conversion and withdrawal."""
+"""PAKD Mirror DB: SQL forward resolution, ledger checks and reverse loopback."""
 from datetime import datetime
 from decimal import Decimal
 from schemas import P2PEscrowMatchDetail, PAKDInternalTrailRecord, TrailNode, TrailEdge
 from services.bank_trailer import merchant_heuristic
 from scenarios import RATE
+from services.pakd_mirror_db import mirror_db, SOURCE
 
 D = Decimal
-PAKD_ZONE = "Zona 2: PAKD Trails (Off-Chain Exchange & P2P Ledger)"
+PAKD_ZONE = "Zona 2: PAKD Mirror DB (SQLite · data sintetis)"
 
 
 class P2PAndPAKDBridge:
+    def __init__(self, database=None):
+        self.mirror_db = mirror_db if database is None else database
+
     def match_handoff(self, handoff, scenario):
         matches = []
         for intake in scenario["pakd_intake_ledger"]:
@@ -26,7 +30,17 @@ class P2PAndPAKDBridge:
         intake = matches[0]
         if intake["pakd_user_uid"] != scenario["onramp"]["uid"] or intake["pakd_name"] != scenario["onramp"]["platform"]:
             raise ValueError("Mapping UID/platform internal PAKD tidak konsisten")
-        return intake
+        match = self.mirror_db.lookup_deposit_by_fna_handoff(
+            handoff.pakd_gateway_va_or_account, handoff.rrn_reference_number, handoff.fiat_transfer_amount_idr)
+        if not match or match["user_uid"] != intake["pakd_user_uid"] or match["pakd_name"] != intake["pakd_name"]:
+            raise ValueError("Kueri SQL Mirror DB tidak menemukan profil PAKD yang sesuai handoff")
+        ramp = scenario["onramp"]
+        initial = next(w for w in scenario["wallets"] if w["id"] == ramp["initial_wallet"])
+        expected_address = initial["address"].lower() if ramp["chain"] in {"ETHEREUM_ERC20", "BSC_BEP20"} else initial["address"]
+        if (match["withdrawal_tx_hash"] != ramp["withdrawal_tx_hash"]
+            or match["initial_wallet_address"] != expected_address or match["chain"] != ramp["chain"]):
+            raise ValueError("Withdrawal/initial wallet tidak sesuai rekaman Mirror DB")
+        return {**intake, "mirror_deposit": match}
 
     def resolve_onramp(self, handoff, scenario, nodes, edges):
         intake = self.match_handoff(handoff, scenario)
@@ -39,7 +53,8 @@ class P2PAndPAKDBridge:
         evidence = {"rrn_reference_number": handoff.rrn_reference_number, "rrn_exact_match": True,
             "gateway_exact_match": True, "amount_exact_match": True, "bank_transfer_timestamp": handoff.fiat_transfer_timestamp.isoformat(),
             "pakd_intake_timestamp": intake["timestamp"], "intake_id": intake["intake_id"], "fna_trail_id": handoff.fna_trail_id,
-            "evidence_source": "SYNTHETIC_PAKD_INTERNAL_LEDGER"}
+            "evidence_source": SOURCE, "mirror_deposit": intake["mirror_deposit"],
+            "sql_query": "mirror_pakd_fiat_deposits JOIN mirror_pakd_users LEFT JOIN mirror_pakd_withdrawals · VA + RRN + amount exact"}
         nodes.append(TrailNode(id="pakd-fiat-deposit", label=f"PAKD fiat ledger · {ramp['platform']}",
             node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_FIAT_DEPOSIT", entity_label=ramp["platform"],
             amount_idr=handoff.fiat_transfer_amount_idr, hop=base_hop + 1,
@@ -110,7 +125,8 @@ class P2PAndPAKDBridge:
             node_type="PAKD_USER_ACCOUNT", entity_label=ramp["platform"], crypto_amount=D(ramp["crypto_amount"]),
             amount_idr=D(ramp["crypto_amount"]) * RATE, asset=ramp["asset"], hop=hop + 1,
             metadata={"architecture_zone": PAKD_ZONE, "uid": ramp["uid"], "kyc": ramp["kyc"],
-                "pakd_internal_record_id": record.record_id, "evidence_source": "SYNTHETIC_PAKD_INTERNAL_LEDGER"}))
+                "pakd_internal_record_id": record.record_id, "evidence_source": SOURCE, "mirror_deposit": intake["mirror_deposit"],
+                "sql_query": "mirror_pakd_fiat_deposits JOIN mirror_pakd_users LEFT JOIN mirror_pakd_withdrawals · VA + RRN + amount exact"}))
         edges.append(TrailEdge(id="bridge-credit", source="pakd-conversion", target="scammer-uid", edge_type="PAKD_INTERNAL_CREDIT",
             label=f"{ramp['crypto_amount']} {ramp['asset']} → withdrawal", crypto_amount=D(ramp["crypto_amount"]), asset=ramp["asset"],
             timestamp=credit_time, metadata={"offchain": True, "uid": ramp["uid"]}))
@@ -124,8 +140,14 @@ class P2PAndPAKDBridge:
         for deposit_node in list(nodes):
             if deposit_node.node_type not in {"DIRECT_EXCHANGE_DEPOSIT", "P2P_ESCROW_DEPOSIT"}:
                 continue
-            metadata = dict(deposit_node.metadata)
-            institution = metadata.get("platform", deposit_node.entity_label)
+            match = self.mirror_db.match_wallet_in_mirror_db(deposit_node.address, deposit_node.chain)
+            if not match or match["wallet_type"] != "CUSTODIAL_DEPOSIT_ADDRESS":
+                raise ValueError("Deposit wallet tidak memiliki pemetaan custodial pada Mirror DB")
+            if match["user_uid"] != deposit_node.metadata.get("uid") or match["pakd_name"] != deposit_node.metadata.get("platform"):
+                raise ValueError("Reverse loopback Mirror DB tidak sesuai UID/platform")
+            deposit_node.metadata["mirror_match"] = match
+            metadata = {**deposit_node.metadata, "mirror_match": match, "kyc_nik_masked": match["nik_masked"]}
+            institution = match["pakd_name"]
             account_node_id = f"pakd-account-{deposit_node.id}"
             nodes.append(TrailNode(id=account_node_id, label=f"Akun PAKD penerima · {institution}",
                 node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_RECEIVER_ACCOUNT", entity_label=institution,
@@ -133,7 +155,7 @@ class P2PAndPAKDBridge:
                 balance_crypto=deposit_node.balance_crypto, asset=deposit_node.asset, hop=deposit_node.hop + 1,
                 metadata={**metadata, "architecture_zone": PAKD_ZONE, "recovery_institution": "PAKD",
                     "linked_deposit_address": deposit_node.address, "kyc_nik_masked": metadata.get("kyc_nik_masked", scenario["onramp"]["kyc"]["nik_masked"]),
-                    "evidence_source": "SYNTHETIC_PAKD_DEPOSIT_ACCOUNT_MAPPING"}))
+                    "evidence_source": SOURCE}))
             if deposit_node.node_type == "DIRECT_EXCHANGE_DEPOSIT":
                 records.append(PAKDInternalTrailRecord(record_id=f"PAKD-DEPOSIT-{metadata.get('uid', deposit_node.id)}", target_node_id=account_node_id,
                     pakd_name=institution, intake_mechanism="ONCHAIN_DEPOSIT", pakd_user_uid=metadata["uid"],
@@ -141,7 +163,7 @@ class P2PAndPAKDBridge:
                     crypto_purchased_token=deposit_node.asset, crypto_purchased_amount=deposit_node.crypto_amount,
                     remaining_pakd_balance_idr=deposit_node.balance_crypto * RATE, withdrawal_status="STILL_IN_PAKD_WALLET",
                     blockchain_network=deposit_node.chain,
-                    metadata={"deposit_address": deposit_node.address, "evidence_source": "SYNTHETIC_PAKD_DEPOSIT_ACCOUNT_MAPPING"}))
+                    metadata={"deposit_address": deposit_node.address, "evidence_source": SOURCE}))
             deposit_node.metadata.pop("recovery_institution", None)
             deposit_node.metadata["linked_pakd_account_node_id"] = account_node_id
             incoming = [edge for edge in edges if edge.target == deposit_node.id and edge.timestamp]
@@ -149,7 +171,7 @@ class P2PAndPAKDBridge:
                 edge_type="PAKD_ONCHAIN_DEPOSIT_CREDIT", label=f"Setoran → UID {metadata.get('uid', 'demo')}",
                 crypto_amount=deposit_node.crypto_amount, asset=deposit_node.asset,
                 timestamp=max((edge.timestamp for edge in incoming), default=None),
-                metadata={"correlation_only": True, "evidence_source": "SYNTHETIC_PAKD_DEPOSIT_ACCOUNT_MAPPING"}))
+                metadata={"correlation_only": True, "evidence_source": SOURCE}))
         sell_orders = [o for o in scenario["p2p_orders"] if o["p2p_direction"] == "OFF_RAMP_WITHDRAWAL"]
         mappings = [(o.get("exchange_node"), o.get("scammer_uid"), o.get("linked_final_bank_account")) for o in sell_orders]
         if len(mappings) != len(set(mappings)) or len({o["order_id"] for o in sell_orders}) != len(sell_orders):
@@ -161,6 +183,7 @@ class P2PAndPAKDBridge:
             deposit = next(n for n in nodes if n.id == order["exchange_node"])
             if deposit.address != order["linked_onchain_address"] or deposit.metadata.get("uid") != order["scammer_uid"]:
                 continue
+            metadata = deposit.metadata
             target = accounts[order["final_bank_node"]]
             fraction = deposit.taint_score_pct / 100 if deposit.taint_score_pct is not None else D(0)
             if target["account"] != order["linked_final_bank_account"]:

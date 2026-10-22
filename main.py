@@ -1,30 +1,38 @@
 """Local IASC cross-rail proof of concept. No operational recovery connections."""
-import asyncio
 from collections import OrderedDict
-from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
-from hashlib import sha256
+from decimal import Decimal
 from pathlib import Path
 import time
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
-from schemas import CrossRailGraphResponse, FNAMoneyTrailHandoffInput, SendFreezeRequest, SimulateInstitutionDecisionInput, TrailNode, TrailEdge
+from schemas import CrossRailGraphResponse, FNAMoneyTrailHandoffInput, SendFreezeRequest, SimulateInstitutionDecisionInput, LiveWalletTrailInput, TrailNode, TrailEdge
 from scenarios import SCENARIOS, get_scenario, scenario_catalog
-from services.arkham_client import ArkhamClient, ArkhamAPIError, CHAIN_NAMES
+from services.etherscan_client import EtherscanClient, EtherscanAPIError
+from services.pakd_mirror_db import mirror_db
+from services.scenario_trailer import ScenarioTrailer
 from services.bank_trailer import FNAHandoffAdapter
 from services.p2p_and_pakd_bridge import P2PAndPAKDBridge
 from services.recovery_action import plan_governance_requests, build_evidence_packet, send_request, decide_request, GovernanceConflict
 
 D = Decimal
 ROOT = Path(__file__).resolve().parent
-app = FastAPI(docs_url=None, redoc_url=None, title="IASC Cross-Rail Money Trailing · PoC", version="2.0.0",
-              description="Data sintetis dan aksi pemulihan simulasi. Bukan sistem operasional atau layanan resmi OJK.")
+app = FastAPI(docs_url=None, redoc_url=None, title="In-House OJK Crypto-Trails · PoC", version="3.0.0",
+              description="PAKD Mirror DB SQLite sintetis + Ethereum Mainnet live read-only. Tata kelola freeze simulasi; bukan sistem resmi OJK.")
 # shortcut: state lokal maksimum 128 trace selama 1 jam; gunakan penyimpanan terenkripsi/audit durable sebelum multi-worker/produksi.
 TRACES: OrderedDict = OrderedDict()
 MAX_TRACES = 128
 TRACE_TTL_SECONDS = 3600
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error_without_request_secrets(request, exc):
+    # Pydantic's input/context can contain the UI API key.
+    return JSONResponse(status_code=422, content={"detail": [
+        {key: value for key, value in error.items() if key in {"type", "loc", "msg"}}
+        for error in exc.errors()]})
 
 
 def store_trace(graph):
@@ -59,11 +67,55 @@ async def local_security_headers(request: Request, call_next):
 @app.get("/api/v1/health")
 async def health():
     try:
-        client = ArkhamClient()
-        mode = "SIMULATION" if client.simulation else "LIVE_READ_ONLY_AVAILABLE"
+        client = EtherscanClient()
+        mode = "ETHERSCAN" if client.api_key else "BLOCKSCOUT_PUBLIC"
     except ValueError:
-        mode = "INVALID_ARKHAM_CONFIGURATION"
-    return {"status": "ok", "simulation": True, "arkham_mode": mode, "governance_mode": "SIMULATED_DISPATCH_AND_INSTITUTION_DECISIONS", "fna_mode": "IMPORTED_HANDOFF_ONLY"}
+        mode = "INVALID_ETHERSCAN_CONFIGURATION"
+    return {"status": "ok", "simulation": True, "live_provider": mode,
+        "mirror_db": "SQLITE_SYNTHETIC_SEEDED", "governance_mode": "SIMULATED_DISPATCH_AND_INSTITUTION_DECISIONS",
+        "fna_mode": "IMPORTED_HANDOFF_ONLY"}
+
+
+@app.get("/api/v1/mirror-db/records")
+async def mirror_records():
+    return mirror_db.get_mirror_db_preview()
+
+
+@app.post("/api/v1/trail/live-etherscan", response_model=CrossRailGraphResponse)
+async def trace_live_wallet(payload: LiveWalletTrailInput):
+    try:
+        result = await EtherscanClient(api_key=payload.etherscan_api_key).trace_real_wallet_on_etherscan(
+            payload.wallet_address, max_hops=payload.max_hops, token_filter=payload.token_filter, direction=payload.direction)
+    except EtherscanAPIError as exc:
+        raise HTTPException(502, str(exc)) from None
+    except ValueError:
+        raise HTTPException(503, "Konfigurasi explorer tidak valid; periksa host resmi pada .env") from None
+    nodes, edges = result["nodes"], result["edges"]
+    warnings = list(result["warnings"])
+    handoff = None
+    if payload.simulate_fna_and_mirror_origin:
+        seed = next(node for node in nodes if node.address and node.address.lower() == payload.wallet_address.lower())
+        nodes[:0] = [
+            TrailNode(id="live-origin-bank", label="FNA Money Trails · hulu simulasi", node_zone="FIAT_BANK",
+                node_type="SIMULATED_FNA_ORIGIN", hop=0, metadata={"evidence_source": "SIMULATED_ORIGIN", "simulation": True}),
+            TrailNode(id="live-origin-mirror", label="PAKD Mirror DB · hulu simulasi", node_zone="CRYPTO_EXCHANGE_BRIDGE",
+                node_type="SIMULATED_MIRROR_ORIGIN", hop=1, metadata={"evidence_source": "SIMULATED_ORIGIN", "simulation": True,
+                    "origin_note": "Ilustrasi hubungan FNA → Mirror DB → wallet pilihan; bukan hasil JOIN SQL atau withdrawal terverifikasi."})]
+        for node in nodes[2:]:
+            node.hop += 2
+        edges[:0] = [
+            TrailEdge(id="live-origin-handoff", source="live-origin-bank", target="live-origin-mirror", edge_type="SIMULATED_FNA_HANDOFF",
+                label="Handoff ilustratif · simulasi", metadata={"evidence_source": "SIMULATED_ORIGIN", "simulation": True}),
+            TrailEdge(id="live-origin-withdrawal", source="live-origin-mirror", target=seed.id, edge_type="SIMULATED_WITHDRAWAL",
+                label="Asal wallet ilustratif · simulasi", metadata={"evidence_source": "SIMULATED_ORIGIN", "simulation": True})]
+        warnings.insert(0, "HULU SIMULASI: hubungan bank/PAKD dengan seed wallet hanya ilustrasi, bukan bukti kepemilikan, JOIN Mirror DB atau withdrawal nyata.")
+    graph = CrossRailGraphResponse(trace_id=str(uuid4()), iasc_ticket_id="LIVE-READ-ONLY", fna_trail_id="",
+        scenario_id=None, simulation=False, fna_handoff=handoff, nodes=nodes, edges=edges,
+        total_scam_idr=D(0), total_traced_idr=D(0), recoverable_amount_idr=D(0), recovery_probability_pct=D(0),
+        hop_count=max((node.hop for node in nodes), default=0), route_badges=["ETHEREUM MAINNET LIVE", "PAKD MIRROR REVERSE LOOKUP"],
+        warnings=warnings, live_metadata={**result["metadata"], "simulated_origin": payload.simulate_fna_and_mirror_origin})
+    store_trace(graph)
+    return graph
 
 
 @app.get("/api/v1/trail/scenarios")
@@ -76,11 +128,23 @@ async def trace_report(handoff: FNAMoneyTrailHandoffInput):
     trace_id = str(uuid4())
     if not handoff.scenario_id:
         nodes, edges = FNAHandoffAdapter().manual_snapshot(handoff)
+        try:
+            match = mirror_db.lookup_deposit_by_fna_handoff(handoff.pakd_gateway_va_or_account,
+                handoff.rrn_reference_number, handoff.fiat_transfer_amount_idr)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from None
+        if match:
+            gateway = next(node for node in nodes if node.id == "gateway")
+            gateway.label = "PAKD Mirror DB · kecocokan SQL"
+            gateway.metadata["mirror_deposit"] = match
+        warnings = ["HANDOFF MANUAL BELUM DIVERIFIKASI: tidak ada snapshot FNA yang membuktikan asal dana. Tidak ada rekomendasi freeze atau ledger skenario dibuat.",
+            "Hasil JOIN SQL dari seed sintetis tersedia pada gateway; UID/initial wallet adalah referensi Mirror DB, bukan bukti hubungan perkara." if match else
+            "DATA GAP: VA/RRN/nominal tidak cocok dengan rekaman Mirror DB PAKD."]
         graph = CrossRailGraphResponse(trace_id=trace_id, iasc_ticket_id=handoff.iasc_ticket_id, fna_trail_id=handoff.fna_trail_id,
             scenario_id=None, fna_handoff=handoff, nodes=nodes, edges=edges,
             total_scam_idr=handoff.fiat_transfer_amount_idr, total_traced_idr=D(0), recoverable_amount_idr=D(0),
             recovery_probability_pct=D(0), hop_count=max(n.hop for n in nodes),
-            warnings=["DATA GAP: handoff belum diverifikasi. Tidak ada snapshot FNA atau ledger PAKD mitra untuk memvalidasi RRN, gateway, UID/KYC atau withdrawal. Tidak ada rekomendasi freeze dibuat."])
+            warnings=warnings)
         store_trace(graph)
         return graph
     if handoff.scenario_id not in SCENARIOS:
@@ -95,8 +159,8 @@ async def trace_report(handoff: FNAMoneyTrailHandoffInput):
         nodes, edges = FNAHandoffAdapter().import_snapshot(handoff, scenario)
         bridge = P2PAndPAKDBridge()
         p2p, pakd = bridge.resolve_onramp(handoff, scenario, nodes, edges)
-        # Fixture FNA/PAKD/Arkham stays reproducible; a configured key only enables opt-in live expansion.
-        ArkhamClient(api_key="").trace_fixture(scenario, nodes, edges)
+        # Preset tetap sintetis; pelacakan mainnet adalah aksi live terpisah.
+        ScenarioTrailer().trace_fixture(scenario, nodes, edges)
         offramp, deposits = bridge.resolve_offramp(scenario, nodes, edges)
         p2p.extend(offramp)
         pakd.extend(deposits)
@@ -104,8 +168,8 @@ async def trace_report(handoff: FNAMoneyTrailHandoffInput):
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     recoverable = min(handoff.fiat_transfer_amount_idr, sum((D(r.metadata["available_amount_idr"]) for r in requests), D(0)))
-    warnings = ["DEMO: snapshot FNA, ledger PAKD, identitas/KYC tersamarkan, label Arkham, saldo dan tx_hash adalah sintetis; tidak ada konektor operasional FNA/IASC/bank/PAKD.",
-        "Modul ini menerima handoff downstream FNA dan menambahkan PAKD Trails serta Arkham On-Chain Trails; tidak menggantikan pelacakan PUJK oleh FNA.",
+    warnings = ["DEMO: snapshot FNA, SQLite Mirror DB PAKD, identitas/KYC tersamarkan, ledger on-chain, saldo dan tx_hash adalah sintetis; tidak ada konektor operasional FNA/IASC/bank/PAKD. Gunakan Live Wallet Tracker untuk transaksi mainnet asli.",
+        "Modul ini menerima handoff downstream FNA dan menambahkan PAKD Trails serta Etherscan-compatible On-Chain Trails; tidak menggantikan pelacakan PUJK oleh FNA.",
         "IASC hanya merekomendasikan penundaan. Keputusan dan pelaksanaan freeze berada pada masing-masing PUJK/PAKD atau issuer terkait.",
         "Nilai potensial berbeda dari nominal disetujui institusi. Pengiriman tiket tidak membekukan dana; seluruh callback keputusan di sini simulasi.",
         "Probabilitas recovery dan taint memakai asumsi fixture, bukan kepastian pidana, prediksi terkalibrasi atau jaminan pengembalian dana."]
@@ -113,7 +177,7 @@ async def trace_report(handoff: FNAMoneyTrailHandoffInput):
         warnings.append(f"Biaya konversi fixture Rp{scenario['fees_idr']}; kurs tetap Rp16.000/USDT bukan harga pasar.")
     if scenario.get("expansion_note"):
         warnings.append("Atribusi berhenti pada DEX; output swap tidak diasumsikan milik pelaku tanpa bukti tambahan.")
-    badges = ["FNA HANDOFF", "PAKD TRAILS", "DIRECT VA" if scenario["onramp"]["kind"] == "VA" else "P2P ON-RAMP DETECTED"]
+    badges = ["FNA HANDOFF", "PAKD MIRROR DB", "DIRECT VA" if scenario["onramp"]["kind"] == "VA" else "P2P ON-RAMP DETECTED"]
     if any(p.p2p_direction == "OFF_RAMP_WITHDRAWAL" for p in p2p):
         badges.append("P2P OFF-RAMP CASH-OUT DETECTED")
     edges.sort(key=lambda edge: edge.timestamp or handoff.fiat_transfer_timestamp)
@@ -127,72 +191,16 @@ async def trace_report(handoff: FNAMoneyTrailHandoffInput):
     return graph
 
 
-async def live_expansion(client, source, chain):
-    transfers, intel = await asyncio.gather(client.get_transfers(source.address, chain), client.get_address_intelligence(source.address, chain))
-    raw = transfers.get("transfers", []) if isinstance(transfers, dict) else transfers
-    if not isinstance(raw, list):
-        raise ArkhamAPIError("Kontrak transfer Arkham tidak didukung")
-    nodes, edges = {}, []
-    skipped = 0
-    for index, tx in enumerate(raw[:50]):
-        if not isinstance(tx, dict):
-            skipped += 1
-            continue
-        def extract(value):
-            return value.get("address") if isinstance(value, dict) else value
-        from_address, to_address = extract(tx.get("fromAddress")), extract(tx.get("toAddress"))
-        normalize = str.lower if chain in {"ETHEREUM_ERC20", "BSC_BEP20"} else str
-        matches_source = isinstance(from_address, str) and normalize(from_address) == normalize(source.address)
-        symbol = tx.get("tokenSymbol")
-        transfer_chain = tx.get("chain")
-        if transfer_chain not in {chain, CHAIN_NAMES[chain]}:
-            skipped += 1
-            continue
-        if not matches_source or not isinstance(to_address, str) or not 20 <= len(to_address) <= 100 or symbol not in {"USDT", "USDC", "ETH"}:
-            skipped += 1
-            continue
-        try:
-            amount = D(str(tx["unitValue"]))
-            if not amount.is_finite() or amount <= 0:
-                raise ValueError()
-            timestamp = tx.get("blockTimestamp")
-            if isinstance(timestamp, (int, float)):
-                timestamp = datetime.fromtimestamp(timestamp / 1000 if timestamp > 100000000000 else timestamp, timezone.utc)
-            elif isinstance(timestamp, str):
-                timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-            else:
-                raise ValueError()
-            if timestamp.tzinfo is None or timestamp.utcoffset() is None:
-                raise ValueError()
-        except (InvalidOperation, KeyError, ValueError, OverflowError, OSError):
-            skipped += 1
-            continue
-        tx_hash = tx.get("transactionHash")
-        if not isinstance(tx_hash, str) or not tx_hash or len(tx_hash) > 160:
-            skipped += 1
-            continue
-        node_id = "live-" + sha256((chain + normalize(to_address)).encode()).hexdigest()[:16]
-        nodes[node_id] = TrailNode(id=node_id, label=to_address[:10] + "…", node_zone="ONCHAIN_WALLET", node_type="LIVE_UNATTRIBUTED_WALLET",
-            entity_label="Unverified on-chain address", address=to_address, chain=chain, asset=symbol, crypto_amount=amount,
-            taint_score_pct=None, hop=source.hop + 1, status="LIVE_UNATTRIBUTED",
-            metadata={"evidence_source": "ARKHAM_LIVE_READ_ONLY", "ownership": "UNKNOWN", "balance_status": "NOT_FETCHED", "taint_status": "UNKNOWN"})
-        edges.append(TrailEdge(id="live-" + sha256((tx_hash + str(index)).encode()).hexdigest()[:16], source=source.id, target=node_id,
-            edge_type="ONCHAIN_TRANSFER", label=f"{amount} {symbol} · live belum teratribusi", crypto_amount=amount, asset=symbol,
-            tx_hash=tx_hash, timestamp=timestamp, metadata={"evidence_source": "ARKHAM_LIVE_READ_ONLY", "taint_status": "UNKNOWN", "chain": chain}))
-    return {"nodes": list(nodes.values()), "edges": edges, "simulation": False,
-            "source_intelligence": intel, "warnings": ["LIVE READ ONLY: hasil belum teratribusi ke dana laporan. Tidak menambah recovery/taint dan tidak membuktikan kepemilikan.",
-                "Satu halaman maksimal 50 outgoing transfers; hasil bukan riwayat lengkap. Kontrak provider perlu diverifikasi terhadap akses API Anda.", f"Record dilewati karena tidak didukung/tidak valid: {skipped}."]}
-
-
 @app.get("/api/v1/trail/address/{address}/expand")
 async def expand_address(address: str, trace_id: str = Query(min_length=1, max_length=80),
                          chain: str = Query(default="TRON_TRC20"), live: bool = False):
     state = require_trace(trace_id)
     graph = state["graph"]
-    source = next((n for n in graph.nodes if n.address == address and n.chain == chain), None)
+    normalize = str.lower if chain in {"ETHEREUM_ERC20", "BSC_BEP20"} else str
+    source = next((n for n in graph.nodes if n.address and normalize(n.address) == normalize(address) and n.chain == chain), None)
     if not source:
         raise HTTPException(404, "Address/jaringan tidak ada dalam trace ini")
-    if chain not in CHAIN_NAMES:
+    if chain not in {"TRON_TRC20", "ETHEREUM_ERC20", "BSC_BEP20"}:
         raise HTTPException(422, "Jaringan tidak didukung")
     cache_key = (address, chain, live)
     if cache_key in state["expansions"]:
@@ -200,20 +208,27 @@ async def expand_address(address: str, trace_id: str = Query(min_length=1, max_l
     if len(graph.nodes) >= 256 or len(graph.edges) >= 512:
         raise HTTPException(422, "Batas ukuran graph tercapai; mulai investigasi baru")
     if live:
+        if chain != "ETHEREUM_ERC20":
+            raise HTTPException(422, "Live explorer hanya mendukung Ethereum Mainnet; TRON/BSC hanya tersedia pada preset sintetis")
         try:
-            client = ArkhamClient()
-            if client.simulation:
-                raise HTTPException(409, "ARKHAM_API_KEY belum diatur; gunakan perluasan simulasi")
-            result = await live_expansion(client, source, chain)
-        except ArkhamAPIError as exc:
-            raise HTTPException(502, str(exc)) from exc
-        except ValueError as exc:
-            raise HTTPException(503, "Konfigurasi Arkham tidak valid") from exc
+            result = await EtherscanClient().trace_real_wallet_on_etherscan(source.address, max_hops=1)
+            live_seed = next(node for node in result["nodes"] if node.address.lower() == source.address.lower())
+            result["nodes"] = [node for node in result["nodes"] if node.id != live_seed.id]
+            for edge in result["edges"]:
+                if edge.source == live_seed.id:
+                    edge.source = source.id
+                if edge.target == live_seed.id:
+                    edge.target = source.id
+            result["simulation"] = False
+        except EtherscanAPIError as exc:
+            raise HTTPException(502, str(exc)) from None
+        except ValueError:
+            raise HTTPException(503, "Konfigurasi explorer tidak valid") from None
     else:
         if not graph.scenario_id:
             result = {"nodes": [], "edges": [], "warnings": ["Tidak ada fixture on-chain untuk laporan ini."], "simulation": True}
         else:
-            nodes, edges = ArkhamClient(api_key="").expand_fixture(get_scenario(graph.scenario_id), address, chain, {n.id for n in graph.nodes})
+            nodes, edges = ScenarioTrailer().expand_fixture(get_scenario(graph.scenario_id), address, chain, {n.id for n in graph.nodes})
             result = {"nodes": nodes, "edges": edges, "simulation": True,
                       "warnings": ["Tidak ada outgoing hop tambahan dalam fixture ini." if not edges else "Hop tambahan adalah arus investigasi; tidak menambah nilai dana terselamatkan."]}
     existing_ids = {n.id for n in graph.nodes}

@@ -1,67 +1,14 @@
-"""Read-only Arkham client plus deterministic fixture on-chain attribution."""
-import os
+"""Deterministic scenario graph and proportional demo attribution, separate from live APIs."""
 from datetime import datetime
 from decimal import Decimal
-from urllib.parse import quote, urlparse
-import httpx
 from schemas import TrailNode, TrailEdge
-from scenarios import SCENARIOS, RATE
+from scenarios import RATE
+from services.pakd_mirror_db import mirror_db
 
 D = Decimal
-CHAIN_NAMES = {"TRON_TRC20": "tron", "ETHEREUM_ERC20": "ethereum", "BSC_BEP20": "bsc"}
 
 
-class ArkhamAPIError(RuntimeError):
-    pass
-
-
-class ArkhamClient:
-    def __init__(self, api_key=None, base_url=None, transport=None):
-        self.api_key = os.getenv("ARKHAM_API_KEY", "") if api_key is None else api_key
-        self.base_url = (base_url or os.getenv("ARKHAM_BASE_URL", "https://api.arkhamintelligence.com")).rstrip("/")
-        parsed = urlparse(self.base_url)
-        if parsed.scheme != "https" or parsed.hostname not in {"api.arkhamintelligence.com", "api.arkm.com"} or parsed.username or parsed.password:
-            raise ValueError("ARKHAM_BASE_URL harus host HTTPS resmi Arkham")
-        self.transport = transport
-        self.simulation = not bool(self.api_key.strip())
-
-    async def _get(self, path, params):
-        try:
-            async with httpx.AsyncClient(base_url=self.base_url, headers={"API-Key": self.api_key},
-                                         timeout=10, transport=self.transport, follow_redirects=False) as client:
-                response = await client.get(path, params=params)
-                response.raise_for_status()
-                payload = response.json()
-                if not isinstance(payload, (dict, list)):
-                    raise ArkhamAPIError("Arkham mengembalikan struktur respons yang tidak didukung")
-                return payload
-        except (httpx.HTTPError, ValueError) as exc:
-            # Credentials and upstream response bodies must not enter API error messages.
-            raise ArkhamAPIError("Arkham gagal diakses; periksa otorisasi, kuota, host, atau kontrak API") from exc
-
-    async def get_transfers(self, address, chain):
-        if chain not in CHAIN_NAMES:
-            raise ValueError("Jaringan tidak didukung")
-        if self.simulation:
-            for scenario in SCENARIOS.values():
-                address_ids = {w["id"] for w in scenario["wallets"] if w["address"] == address and scenario["onramp"]["chain"] == chain}
-                if address_ids:
-                    return {"transfers": [tx for tx in scenario.get("chain_ledger", []) + scenario.get("expansion_ledger", []) if tx["source"] in address_ids], "simulation": True}
-            return {"transfers": [], "simulation": True}
-        return await self._get("/transfers", {"base": address, "chains": CHAIN_NAMES[chain], "flow": "out", "limit": 50,
-                                              "offset": 0, "sortKey": "time", "sortDir": "asc"})
-
-    async def get_address_intelligence(self, address, chain):
-        if chain not in CHAIN_NAMES:
-            raise ValueError("Jaringan tidak didukung")
-        if self.simulation:
-            for scenario in SCENARIOS.values():
-                for w in scenario["wallets"]:
-                    if w["address"] == address and scenario["onramp"]["chain"] == chain:
-                        return {"address": address, "entity": w["label"], "type": w["kind"], "simulation": True}
-            return {"address": address, "entity": "Unknown", "simulation": True}
-        return await self._get(f"/intelligence/address/{quote(address, safe='')}", {"chain": CHAIN_NAMES[chain]})
-
+class ScenarioTrailer:
     def trace_fixture(self, scenario, nodes, edges):
         """Consume chronological stock proportionally; show cumulative flow separately from balance."""
         ramp = scenario["onramp"]
@@ -102,7 +49,7 @@ class ArkhamClient:
                 label=f"{amount:,.4f}".rstrip("0").rstrip(".") + f" {tx['asset']}", crypto_amount=amount,
                 asset=tx["asset"], amount_idr=tainted * RATE, tx_hash=tx["tx_hash"], timestamp=tx["timestamp"],
                 metadata={"chain": tx["chain"], "tainted_crypto_amount": str(tainted),
-                          "evidence_source": "SYNTHETIC_ARKHAM_LEDGER", "taint_model": "proportional_chronological_stock"}))
+                          "evidence_source": "SIMULATED_SCENARIO_LEDGER", "taint_model": "proportional_chronological_stock"}))
         for wallet_id, spent in scenario.get("offramp_crypto_spent", {}).items():
             spent = D(spent)
             if spent < 0 or spent > funds.get(wallet_id, D(0)):
@@ -121,12 +68,15 @@ class ArkhamClient:
             else:
                 fraction = tainted_received[wallet_id] / (amount + clean) if amount + clean else D(0)
             pct = min(fraction * 100, D(100))
-            metadata = {**w, "evidence_source": "SYNTHETIC_ARKHAM_INTELLIGENCE", "architecture_zone": "Zona 3: On-Chain Crypto Trails (Arkham Intelligence API)", "arkham_entity_profile": w["label"],
+            metadata = {**w, "evidence_source": "SIMULATED_SCENARIO", "architecture_zone": "Zona 3: On-Chain Trails · skenario sintetis", "scenario_entity_profile": w["label"],
                         "taint_model": "proportional_chronological_stock", "onchain_hop": hops[wallet_id],
                         "is_initial_wallet": wallet_id == initial, "tainted_balance_crypto": str(balance * fraction),
                         "calculated_remaining_crypto": str(funds[wallet_id]), "cumulative_received_crypto": str(amount),
                         "attribution_status": "STOPPED_AT_TRANSFORMATION" if w.get("boundary") else "FIXTURE_ATTRIBUTED",
                         "tx_hashes": [tx["tx_hash"] for tx in ledger if tx["target"] == wallet_id or tx["source"] == wallet_id]}
+            match = mirror_db.match_wallet_in_mirror_db(w["address"], ramp["chain"])
+            if match:
+                metadata["mirror_match"] = match
             nodes.append(TrailNode(id=wallet_id, label=w["label"], node_zone="ONCHAIN_WALLET", node_type=w["kind"],
                 entity_label=w["label"] if w["kind"] != "UNHOSTED_WALLET" else "Unhosted Wallet",
                 address=w["address"], chain=ramp["chain"], asset=ramp["asset"], crypto_amount=amount,
@@ -150,7 +100,7 @@ class ArkhamClient:
                 new_nodes.append(TrailNode(id=w["id"], label=w["label"], node_zone="ONCHAIN_WALLET", node_type=w["kind"],
                     entity_label=w["label"], address=w["address"], chain=chain, asset=tx["asset"],
                     crypto_amount=D(tx["crypto_amount"]), amount_idr=D(0), taint_score_pct=None, hop=9,
-                    metadata={"evidence_source": "SYNTHETIC_ARKHAM_LEDGER", "attribution_status": "UNATTRIBUTED_POOL_FLOW",
+                    metadata={"evidence_source": "SIMULATED_SCENARIO_LEDGER", "attribution_status": "UNATTRIBUTED_POOL_FLOW",
                               "balance_status": "NOT_FETCHED",
                               "note": scenario.get("expansion_note", "Hop investigasi tambahan")}))
             new_edges.append(TrailEdge(id=tx["id"], source=tx["source"], target=tx["target"], edge_type="ONCHAIN_TRANSFER",

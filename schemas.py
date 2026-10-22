@@ -114,7 +114,7 @@ class CrossRailGraphResponse(BaseModel):
     fna_trail_id: str
     scenario_id: str | None
     simulation: bool = True
-    fna_handoff: FNAMoneyTrailHandoffInput
+    fna_handoff: FNAMoneyTrailHandoffInput | None = None
     nodes: list[TrailNode]
     edges: list[TrailEdge]
     pakd_trails: list[PAKDInternalTrailRecord] = Field(default_factory=list)
@@ -129,6 +129,23 @@ class CrossRailGraphResponse(BaseModel):
     route_badges: list[str] = Field(default_factory=list)
     governance_requests: list[InstitutionFreezeDecision] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
+    live_metadata: dict[str, Any] = Field(default_factory=dict)
+
+class LiveWalletTrailInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+    wallet_address: str = Field(pattern=r"^0x[a-fA-F0-9]{40}$")
+    etherscan_api_key: str | None = Field(default=None, max_length=256, repr=False)
+    max_hops: int = Field(default=2, ge=1, le=2, strict=True)
+    token_filter: Literal["ALL", "ETH", "USDT", "USDC"] = "ALL"
+    direction: Literal["OUTBOUND", "BOTH"] = "OUTBOUND"
+    simulate_fna_and_mirror_origin: bool = False
+
+    @field_validator("etherscan_api_key")
+    @classmethod
+    def key_has_no_control_characters(cls, value):
+        if value and any(ord(char) < 32 or ord(char) == 127 for char in value):
+            raise ValueError("API key mengandung karakter tidak valid")
+        return value
 
 class SendFreezeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")

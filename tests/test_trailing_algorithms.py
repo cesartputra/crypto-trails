@@ -6,7 +6,7 @@ import pytest
 from scenarios import chain_tx, get_scenario, stamp
 from schemas import FNAMoneyTrailHandoffInput
 from services.bank_trailer import FNAHandoffAdapter, merchant_heuristic
-from services.arkham_client import ArkhamClient
+from services.scenario_trailer import ScenarioTrailer
 from services.p2p_and_pakd_bridge import P2PAndPAKDBridge
 
 
@@ -116,7 +116,7 @@ def test_onchain_split_outflows_cannot_exceed_available_seed():
     fixture["chain_ledger"][1]["crypto_amount"] = "11250"
     nodes, edges = prepare_onchain(fixture)
     with pytest.raises(ValueError):
-        ArkhamClient(api_key="").trace_fixture(fixture, nodes, edges)
+        ScenarioTrailer().trace_fixture(fixture, nodes, edges)
 
 
 def test_onchain_transfer_before_initial_withdrawal_is_rejected():
@@ -124,7 +124,7 @@ def test_onchain_transfer_before_initial_withdrawal_is_rejected():
     fixture["chain_ledger"][0]["timestamp"] = stamp(-1)
     nodes, edges = prepare_onchain(fixture)
     with pytest.raises(ValueError):
-        ArkhamClient(api_key="").trace_fixture(fixture, nodes, edges)
+        ScenarioTrailer().trace_fixture(fixture, nodes, edges)
 
 
 def test_proportional_taint_of_clean_and_suspected_funds():
@@ -132,7 +132,7 @@ def test_proportional_taint_of_clean_and_suspected_funds():
     fixture["wallets"][0]["clean_balance_crypto"] = "11250"
     fixture["wallets"][0]["balance_crypto"] = "11250"
     nodes, edges = prepare_onchain(fixture)
-    ArkhamClient(api_key="").trace_fixture(fixture, nodes, edges)
+    ScenarioTrailer().trace_fixture(fixture, nodes, edges)
     wallets = {node.id: node for node in nodes if node.node_zone == "ONCHAIN_WALLET"}
     assert all(wallets[name].taint_score_pct == 50 for name in ["w0", "w1", "w2", "deposit"])
     initial_outflows = [edge for edge in edges if edge.source == "w0"]
@@ -150,7 +150,7 @@ def test_taint_uses_remaining_balance_when_a_later_deposit_arrives():
         chain_tx("later-out", "w1", "deposit", "4500", 180),
     ]
     nodes, edges = prepare_onchain(fixture)
-    ArkhamClient(api_key="").trace_fixture(fixture, nodes, edges)
+    ScenarioTrailer().trace_fixture(fixture, nodes, edges)
     by_id = {edge.id: edge for edge in edges}
     assert Decimal(by_id["first-out"].metadata["tainted_crypto_amount"]) == Decimal("3375")
     assert Decimal(by_id["later-out"].metadata["tainted_crypto_amount"]) == Decimal("3150")
@@ -162,7 +162,7 @@ def test_taint_uses_remaining_balance_when_a_later_deposit_arrives():
 def test_offramp_cannot_resolve_inconsistent_or_duplicated_sale(mutation):
     fixture = get_scenario("p2p-full-cycle")
     nodes, edges = prepare_onchain(fixture)
-    ArkhamClient(api_key="").trace_fixture(fixture, nodes, edges)
+    ScenarioTrailer().trace_fixture(fixture, nodes, edges)
     sale = fixture["p2p_orders"][1]
     if mutation == "overcredited":
         sale["crypto_amount_usdt"] = "99999"

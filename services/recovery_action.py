@@ -55,8 +55,11 @@ def plan_governance_requests(scenario, nodes):
 
 
 def build_evidence_packet(graph, request):
+    if not graph.simulation or graph.fna_handoff is None:
+        raise ValueError("Hasil live read-only tanpa handoff FNA terverifikasi tidak dapat menjadi tiket freeze otomatis")
     node = next(n for n in graph.nodes if n.id == request.target_node_id)
     evidence = {"iasc_ticket_id": graph.iasc_ticket_id, "fna_trail_id": graph.fna_trail_id, "trace_id": graph.trace_id,
+        "simulation": graph.simulation, "mirror_db_source": "SYNTHETIC_PAKD_MIRROR_DB_SQLITE",
         "fna_handoff": graph.fna_handoff.model_dump(mode="json"),
         "nodes": [n.model_dump(mode="json") for n in graph.nodes], "edges": [e.model_dump(mode="json") for e in graph.edges],
         "pakd_trails": [r.model_dump(mode="json") for r in graph.pakd_trails],
