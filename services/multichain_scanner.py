@@ -33,6 +33,10 @@ class _UnsupportedSolanaVersion(ScannerAPIError):
     pass
 
 
+class _SolscanPlanRequired(ScannerAPIError):
+    pass
+
+
 def _uint(value, maximum=2**64 - 1):
     if isinstance(value, D):
         if not value.is_finite() or not 0 <= value <= maximum or value != value.to_integral_value():
@@ -113,7 +117,17 @@ class MultichainScanner:
                     if chain == 'BTC':
                         nodes, edges = await self._bitcoin(client, wallet_address, max_hops, direction, state, warnings)
                     elif solscan_key:
-                        nodes, edges = await self._solscan(client, wallet_address, max_hops, direction, state, warnings, solscan_key, solscan_url)
+                        try:
+                            nodes, edges = await self._solscan(client, wallet_address, max_hops, direction, state, warnings, solscan_key, solscan_url)
+                        except _SolscanPlanRequired as exc:
+                            warnings.append(str(exc) + '; pelacakan dilanjutkan melalui Solana Mainnet RPC publik dengan sumber data terpisah.')
+                            state.update(fallback_from='SOLSCAN_PRO_API', fallback_reason='SOLSCAN_PLAN_REQUIRED')
+                            state['providers'].clear()
+                            state['activity'].clear()
+                            try:
+                                nodes, edges = await self._solana(client, wallet_address, max_hops, direction, state, warnings)
+                            except ScannerAPIError as rpc_error:
+                                raise ScannerAPIError(str(exc) + '; fallback RPC juga gagal: ' + str(rpc_error)) from None
                     else:
                         nodes, edges = await self._solana(client, wallet_address, max_hops, direction, state, warnings)
         except TimeoutError:
@@ -130,6 +144,7 @@ class MultichainScanner:
                 'scanner_provider': provider, 'seed_wallet_address': wallet_address, 'max_hops': max_hops,
                 'token_filter': token_filter, 'direction': direction, 'auto_scan_cross_chain': False,
                 'page_size': self.PAGE_SIZE, 'requests_made': state['requests'], 'truncated': state['truncated'],
+                'fallback_from': state.get('fallback_from'), 'fallback_reason': state.get('fallback_reason'),
                 'activity': state['activity'], 'fetched_at': datetime.now(timezone.utc).isoformat()}}
 
     async def _json(self, client, state, method, url, payload=None, *, params=None, headers=None, provider=None):
@@ -145,6 +160,19 @@ class MultichainScanner:
                         403: 'akses ditolak (HTTP 403); periksa paket API, aktivasi key, atau pembatasan IP',
                         429: 'batas permintaan/kuota tercapai (HTTP 429); tunggu lalu coba kembali'}
                     if response.status_code in messages:
+                        if response.status_code == 401:
+                            denied = bytearray()
+                            async for chunk in response.aiter_bytes():
+                                denied.extend(chunk[:max(4096 - len(denied), 0)])
+                                if len(denied) >= 4096:
+                                    break
+                            try:
+                                payload = json.loads(denied)
+                            except ValueError:
+                                payload = None
+                            error = payload.get('errors') if isinstance(payload, dict) else None
+                            if isinstance(error, dict) and str(error.get('code')) == '401' and error.get('message') == 'Unauthorized: Please upgrade your api key level.':
+                                raise _SolscanPlanRequired('Solscan Pro API menolak akses endpoint akun: level/paket API key perlu ditingkatkan (HTTP 401)')
                         raise ScannerAPIError(provider + ': ' + messages[response.status_code])
                 response.raise_for_status()
                 body = bytearray()

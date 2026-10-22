@@ -13,6 +13,7 @@ from services.multichain_scanner import MultichainScanner, ScannerAPIError, SOLS
 SOL = 'So11111111111111111111111111111111111111112'
 OTHER = '11111111111111111111111111111111'
 KEY = 'solscan-private-test-key'
+PLAN_DENIED = {'success': False, 'errors': {'code': 401, 'message': 'Unauthorized: Please upgrade your api key level.'}}
 
 
 def signature(byte=1):
@@ -236,3 +237,65 @@ def test_health_reports_configured_solana_provider_without_secret(client, monkey
     assert KEY not in response.text
     monkeypatch.setenv('SOLSCAN_API_KEY', '')
     assert client.get('/api/v1/health').json()['dedicated_scanners']['SOLANA'] == 'SOLANA_MAINNET_RPC'
+
+
+@pytest.mark.parametrize('denied_endpoint', ['/account/detail', '/account/transfer'])
+def test_plan_denial_falls_back_to_real_rpc_with_explicit_provenance(denied_endpoint):
+    calls = []
+    def handler(request):
+        calls.append(request)
+        if request.url.host == 'pro-api.solscan.io':
+            assert request.headers['token'] == KEY
+            if request.url.path.endswith(denied_endpoint):
+                return httpx.Response(401, json=PLAN_DENIED)
+            return httpx.Response(200, json={'success': True, 'data': {'account': SOL, 'lamports': 999}})
+        assert str(request.url) == module.SOLANA_RPC and 'token' not in request.headers
+        result = {'value': 123456789} if json.loads(request.content)['method'] == 'getBalance' else []
+        return httpx.Response(200, json={'result': result})
+    graph, _ = run(handler=handler)
+    assert graph['metadata']['provider'] == 'SOLANA_MAINNET_RPC'
+    assert graph['metadata']['fallback_from'] == 'SOLSCAN_PRO_API'
+    assert graph['metadata']['fallback_reason'] == 'SOLSCAN_PLAN_REQUIRED'
+    assert graph['metadata']['requests_made'] == len(calls)
+    assert graph['nodes'][0].balance_crypto == Decimal('0.123456789')
+    assert all(node.scanner_provider == 'SOLANA_MAINNET_RPC' for node in graph['nodes'])
+    assert graph['edges'] == [] and KEY not in repr(graph)
+    assert any('level/paket' in warning and 'RPC publik' in warning for warning in graph['warnings'])
+
+
+def test_invalid_key_is_not_misclassified_as_plan_denial():
+    calls = []
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(401, json={'success': False, 'errors': {'code': 401, 'message': 'Invalid token: ' + KEY}})
+    with pytest.raises(ScannerAPIError) as error:
+        run(handler=handler)
+    assert 'autentikasi' in str(error.value) and KEY not in str(error.value)
+    assert len(calls) == 1 and calls[0].url.host == 'pro-api.solscan.io'
+
+
+def test_rpc_failure_after_plan_denial_reports_both_safe_causes():
+    def handler(request):
+        if request.url.host == 'pro-api.solscan.io':
+            return httpx.Response(401, json=PLAN_DENIED)
+        raise httpx.ConnectError(KEY, request=request)
+    with pytest.raises(ScannerAPIError) as error:
+        run(handler=handler)
+    assert 'level/paket' in str(error.value) and 'fallback RPC juga gagal' in str(error.value)
+    assert KEY not in str(error.value)
+
+
+def test_live_api_returns_rpc_evidence_after_plan_denial(client, monkeypatch):
+    import main
+    def handler(request):
+        if request.url.host == 'pro-api.solscan.io':
+            return httpx.Response(401, json=PLAN_DENIED)
+        result = {'value': 0} if json.loads(request.content)['method'] == 'getBalance' else []
+        return httpx.Response(200, json={'result': result})
+    monkeypatch.setattr(main, 'MultichainScanner', lambda: MultichainScanner(transport=httpx.MockTransport(handler), pakd_consumer=Consumer()))
+    response = client.post('/api/v1/trail/live-scanner', json={'source_chain': 'SOLANA', 'wallet_address': SOL, 'max_hops': 1})
+    assert response.status_code == 200, response.text
+    graph = response.json()
+    assert graph['simulation'] is False and graph['live_metadata']['fallback_reason'] == 'SOLSCAN_PLAN_REQUIRED'
+    assert graph['governance_requests'] == [] and graph['recoverable_amount_idr'] == '0'
+    assert KEY not in response.text

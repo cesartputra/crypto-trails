@@ -120,7 +120,9 @@ SOLSCAN_BASE_URL=https://pro-api.solscan.io/v2.0
 
 Isi `SOLSCAN_API_KEY` dengan key [Solscan Pro API v2](https://pro-api.solscan.io/pro-api-docs/v2.0/docs) yang aktif, lalu restart server. Key terisi memilih adapter Solscan; key kosong memilih RPC publik. `SOLSCAN_BASE_URL` hanya menerima endpoint HTTPS resmi `https://pro-api.solscan.io/v2.0`. Environment shell lebih utama daripada `.env`. Simpan key hanya di `.env` lokal; `.env.example` tetap kosong.
 
-Error Solscan dibedakan: HTTP 401 berarti autentikasi ditolak (periksa key/aktivasi), HTTP 403 berarti akses ditolak (periksa izin/paket), HTTP 429 berarti batas permintaan tercapai. Kegagalan jaringan diberi nama provider. Saat Solscan terkonfigurasi tetapi gagal, scanner tidak diam-diam mengganti sumber dengan RPC atau data demo. Endpoint `account/detail` berisi identitas teknis/saldo akun; riwayat transfer diambil dari endpoint terpisah `account/transfer`.
+Error Solscan dibedakan: HTTP 401 biasanya berarti autentikasi ditolak (periksa key/aktivasi), HTTP 403 berarti akses ditolak (periksa izin/paket), HTTP 429 berarti batas permintaan tercapai. Namun Solscan juga memakai HTTP 401 dengan pesan `Unauthorized: Please upgrade your api key level.` saat level key tidak mengizinkan endpoint akun. Pesan khusus ini dikenali sebagai pembatasan paket: scanner melanjutkan lewat Solana Mainnet RPC publik, menampilkan peringatan dan metadata `fallback_from=SOLSCAN_PRO_API`, `fallback_reason=SOLSCAN_PLAN_REQUIRED`. Provider pada node/edge tetap RPC, dan key Solscan tidak dikirim ke RPC. Batas request/deadline berlaku gabungan untuk kedua provider.
+
+Key invalid, kuota dan kegagalan jaringan tetap dilaporkan sebagai error; tidak dianggap otomatis sebagai pembatasan paket. Tidak ada transaksi demo pengganti. Endpoint `account/detail` berisi identitas teknis/saldo akun; riwayat transfer diambil dari endpoint terpisah `account/transfer`.
 
 Layanan publik dapat menolak permintaan atau terkena rate limit. Scanner mengembalikan error yang jelas bila provider gagal; hasil demo deterministik hanya berasal dari mode skenario. Akses live semua provider/key belum otomatis terjamin oleh keberhasilan tes mock.
 
@@ -164,7 +166,7 @@ Jalankan `python -m pytest -q`, `node tests/frontend_theme_selfcheck.cjs`, dan `
 
 Smoke publik 22 Oktober 2026 berhasil mengakses Mempool.space, Solana Mainnet RPC dan Ethereum Blockscout. Pada sampel yang diperiksa tidak ada outbound native yang dapat diurai; hasil kosong bukan bukti tidak adanya transaksi sepanjang riwayat. Solana tetap mencatat signature gagal, instruksi yang tidak didukung serta versi transaksi yang belum didukung tanpa mengarang transfer. Akses Etherscan dengan key/kuota akun dan konektor PAKD produksi belum diuji langsung.
 
-Uji langsung Solscan dengan konfigurasi lokal pada tanggal tersebut mendapat HTTP 401; jalur sukses adapter diverifikasi dengan respons HTTP mock sesuai kontrak API. Autentikasi akun Solscan perlu diperbaiki sebelum transfer live Solscan dapat diverifikasi.
+Uji langsung Solscan dengan konfigurasi lokal pada tanggal tersebut mendapat HTTP 401 dengan pesan untuk meningkatkan level API key. Akses endpoint akun Solscan belum tersedia pada key yang diuji; jalur sukses adapter Solscan diverifikasi dengan respons HTTP mock sesuai kontrak API. Scanner dapat memakai RPC publik dengan penjelasan sumber data, tanpa mengubah key atau paket akun.
 
 State lokal maksimum 128 trace/1 jam dan database in-memory hilang saat restart. Tidak ada autentikasi lembaga, mTLS, callback mitra produksi atau audit durable. Jalankan pada loopback dengan data sintetis. Integrasi produksi memerlukan perjanjian akses PAKD, dasar pemrosesan, otorisasi perkara, retensi dan monitoring; biaya demo tidak mencerminkan biaya operasi produksi.
 

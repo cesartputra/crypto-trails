@@ -216,6 +216,7 @@ async function traceLive() {
     } else {
       $("#live-status").textContent = payload.source_chain === "BTC" ? `${provider}: ${count} relasi UTXO diamati. Output merupakan kemungkinan aliran; change dan pemiliknya belum diketahui.` : `${provider}: ${count} transfer asli ditampilkan. Kandidat pivot belum membuktikan perpindahan dana lintas chain.`;
     }
+    if (graph.live_metadata?.fallback_reason === "SOLSCAN_PLAN_REQUIRED") $("#live-status").textContent = "Paket Solscan belum mengizinkan endpoint akun; hasil diambil melalui RPC publik. " + $("#live-status").textContent;
   } catch (error) {
     if (requestId !== state.request) return;
     failTrace(error, true);
@@ -344,6 +345,7 @@ function renderCaseSummary() {
   if (live) {
     const activity = graph.live_metadata?.activity || [];
     $("#executive-narrative").textContent = `Scanner mengamati ${graph.nodes.filter((node) => node.node_zone === "ONCHAIN_WALLET").length} simpul on-chain dan ${graph.edges.filter(isLiveTransfer).length} relasi transaksi publik${activity.length ? `, dari ${activity.length} signature aktivitas` : ""}. Atribusi terhadap dana laporan dan kepemilikan alamat belum terbukti.${available.includes("BTC") ? " Jalur BTC menampilkan kemungkinan output UTXO; change dan pemiliknya belum diketahui." : ""}`;
+    if (graph.live_metadata?.fallback_reason === "SOLSCAN_PLAN_REQUIRED") $("#executive-narrative").textContent = "Solscan menolak akses endpoint karena level paket API. Data berikut berasal dari Solana Mainnet RPC publik. " + $("#executive-narrative").textContent;
   } else {
     const route = [handoff.victim_pujk_name, handoff.last_fna_pujk_name, pakd].filter((value, index, list) => value && list.indexOf(value) === index).join(" → ");
     const split = dispersals.map((row) => `${chainInfo(row.chain)?.badge || row.chain} ${idr(row.fiat_value_idr)} (${number(row.crypto_amount, 6)} ${row.token_symbol})`).join("; ");
