@@ -116,6 +116,25 @@ def test_two_hop_edges_and_token_log_deduplication():
     assert result["metadata"]["wallets_queried"] == 2
 
 
+def test_three_hops_reaches_third_transfer_without_fetching_boundary_wallet():
+    fourth, fifth = "0x" + "4" * 40, "0x" + "5" * 40
+    path = [A, B, C, fourth, fifth]
+    transfers = {sender: native(sender=sender, recipient=recipient, hash="0x" + str(index) * 64)
+                 for index, (sender, recipient) in enumerate(zip(path, path[1:]), 1)}
+    queried = []
+
+    def handle(action, request):
+        address = request.url.params["address"]
+        queried.append(address)
+        return "0" if action == "balance" else [transfers[address]]
+
+    result = run(explorer(handle), max_hops=3, token_filter="ETH")
+    assert {node.address: node.hop for node in result["nodes"]} == {A: 0, B: 1, C: 2, fourth: 3}
+    assert len(result["edges"]) == 3
+    assert set(queried) == {A, B, C}
+    assert result["metadata"]["wallets_queried"] == 3
+
+
 def test_both_directions_keep_actual_edge_direction_without_duplicate():
     def handle(action, request):
         if action == "balance":

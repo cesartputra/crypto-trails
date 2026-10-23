@@ -102,7 +102,7 @@ Pilih chain dan alamat yang sesuai, lalu jalankan live scanner. Contoh Solana be
 
 Live dibatasi halaman terbaru, hop, request, node, edge dan deadline; ini bukan seluruh riwayat dan belum memiliki filter tanggal awal/akhir. Metadata menginformasikan provider, waktu pengambilan, batas dan aktivitas yang tidak didukung. Data live tidak menghasilkan skor taint, nilai IDR, recovery atau freeze otomatis.
 
-UI/API menerima 1–2 hop per pemindaian. Scanner native membatasi 10 transaksi/signature per alamat, 24 request HTTP, 64 node, 128 edge dan 60 detik; satu hop Bitcoin dapat berisi node transaksi serta node output. Scanner EVM membatasi 15 transaksi per kategori/alamat, 36 request, 64 node, 128 edge dan 90 detik. Batas ini dapat memotong riwayat sebelum seluruh hop tercapai.
+UI/API menerima 1–3 hop per pemindaian, dengan default 3 hop. Scanner native membatasi 10 transaksi/signature per alamat, 24 request HTTP, 64 node, 128 edge dan 60 detik; satu hop Bitcoin dapat berisi node transaksi serta node output. Scanner EVM membatasi 15 transaksi per kategori/alamat, 36 request, 64 node, 128 edge dan 90 detik. Batas ini dapat memotong riwayat sebelum seluruh hop tercapai.
 
 ## Konfigurasi `.env`
 

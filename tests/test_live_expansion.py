@@ -59,8 +59,20 @@ def test_live_simulated_origin_is_labeled_and_does_not_insert_fake_mirror_wallet
     assert client.get('/api/v1/mirror-db/records').json() == before
 
 
+@pytest.mark.parametrize('endpoint', ['live-scanner', 'live-etherscan'])
+@pytest.mark.parametrize('options', [{}, {'max_hops': 3}])
+def test_live_endpoint_accepts_three_hops_and_uses_it_by_default(client, monkeypatch, endpoint, options):
+    calls = mock_engine(monkeypatch)
+    response = client.post(f'/api/v1/trail/{endpoint}', json={
+        'wallet_address': A, 'etherscan_api_key': 'ui-secret', **options})
+    assert response.status_code == 200, response.text
+    assert calls == [(A, 3, 'ALL', 'OUTBOUND', 'ui-secret')]
+    assert response.json()['simulation'] is False
+    assert 'ui-secret' not in response.text
+
+
 @pytest.mark.parametrize('field,value', [
-    ('wallet_address','0x123'), ('wallet_address','https://bad.example'), ('max_hops',0), ('max_hops',3),
+    ('wallet_address','0x123'), ('wallet_address','https://bad.example'), ('max_hops',0), ('max_hops',4),
     ('max_hops',True), ('token_filter','BTC'), ('direction','INBOUND'), ('etherscan_api_key','x'*257),
     ('etherscan_api_key','embedded\nsecret')])
 def test_invalid_live_inputs_fail_before_network_and_hide_request_key(client, monkeypatch, field, value):
