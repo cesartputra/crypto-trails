@@ -3,45 +3,27 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#080d17">
-  <title>IASC Crypto-Trails · Satu Perkara, Semua Jalur</title>
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%230c1727'/%3E%3Cpath d='M20 6 32 11v10c0 8-12 14-12 14S8 29 8 21V11Z' fill='none' stroke='%2357d8ef' stroke-width='2'/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/static/styles.css">
-  <script src="/static/app.js" defer></script>
+  <meta name="theme-color" content="#f5f4f0">
+  <title>Crypto Trails · Intelligence Workspace</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%2325241f'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='2'%3E%3Ccircle cx='12' cy='11' r='4'/%3E%3Ccircle cx='29' cy='15' r='4'/%3E%3Ccircle cx='14' cy='30' r='4'/%3E%3Cpath d='m16 12 9 2M13 15l1 11m4 2 8-10'/%3E%3C/g%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/styles.css?v=20261024-3">
+  <script src="/static/app.js?v=20261024-3" defer></script>
 </head>
 <body>
-  <header class="command-bar">
-    <a class="brand" href="/" aria-label="IASC Cross-Rail Intelligence"><span class="brand-mark" aria-hidden="true">⌘</span><span><b>IASC <span class="brand-divider">/</span> <span class="brand-light">CROSS-RAIL</span></b><small>IN-HOUSE OJK CRYPTO-TRAILS · CONCEPT LAB</small></span></a>
-    <div class="command-context"><span class="live-dot"></span> COMMAND CENTER <span class="context-divider">/</span> FNA → PAKD API → MULTICHAIN</div>
-    <div class="command-right"><button id="theme-toggle" type="button" class="button theme-toggle" aria-pressed="false" aria-label="Aktifkan Light mode">☀ Light</button><button id="mirror-db-button" class="button mirror-open" type="button">🔌 Lihat Log API & Mirror DB PAKD</button><span id="source-tag" class="simulation-tag">LAB · SIMULASI</span><span class="analyst-avatar" title="Demo analis">IA</span></div>
-  </header>
-
-  <main>
-    <nav class="investigation-stepper" aria-label="Empat langkah investigasi"><ol>
-      <li data-step="1"><span>1</span><div><strong>Handoff PUJK</strong><small>FNA’s Money Trails</small></div></li>
-      <li data-step="2"><span>2</span><div><strong>Cek PAKD Mirror API</strong><small>Temukan sebaran chain</small></div></li>
-      <li data-step="3"><span>3</span><div><strong>Lacak tiap blockchain</strong><small>BTC · Solana · Ethereum</small></div></li>
-      <li data-step="4"><span>4</span><div><strong>Rekomendasi & keputusan</strong><small>Diputuskan PUJK / PAKD</small></div></li>
-    </ol></nav>
-    <section class="page-heading"><div><div class="eyebrow">PUSAT INVESTIGASI LINTAS JALUR</div><h1>Satu perkara. Semua jalur dana.</h1><p>Ikuti dana dari rekening bank, lihat sebaran kripto, lalu siapkan rekomendasi untuk institusi terkait.</p></div><div class="case-indicator"><span class="live-dot"></span><span id="case-id">MEMUAT KASUS</span></div></section>
-
-    <section class="metrics" aria-label="Ringkasan investigasi" aria-live="polite">
-      <article class="metric"><span class="metric-label"><span id="metric-loss-label">TOTAL KERUGIAN</span> <span class="metric-symbol">↗</span></span><strong id="metric-loss">—</strong><small id="metric-loss-note">Nilai laporan korban</small></article>
-      <article class="metric"><span class="metric-label"><span id="metric-traced-label">DANA TERLACAK</span> <span class="metric-symbol">⌁</span></span><strong id="metric-traced">—</strong><small id="metric-crypto">— USDT · lintas jalur</small></article>
-      <article class="metric"><span class="metric-label">KEDALAMAN JEJAK <span class="metric-symbol">⋮</span></span><strong id="metric-hops">— <em>hop</em></strong><small>FNA · Scoped API · Multichain</small></article>
-      <article class="metric recovery-metric"><span class="metric-label">POTENSI RECOVERY <span class="metric-symbol">◈</span></span><strong id="metric-recovery">—</strong><small id="metric-recovery-note">Estimasi skenario sintetis</small></article>
-      <article class="metric confirmed-metric"><span class="metric-label">DISETUJUI INSTITUSI <span class="metric-symbol">✓</span></span><strong id="metric-confirmed">—</strong><small id="metric-confirmed-note">Belum ada keputusan freeze</small></article>
-    </section>
-
-    <div class="workspace">
-      <aside class="left-panel panel">
-        <div class="panel-title"><span class="section-number">01</span><h2>Mode investigasi</h2></div>
-        <div class="mode-tabs" role="tablist" aria-label="Mode investigasi"><button id="scenario-tab" type="button" role="tab" aria-selected="true" aria-controls="scenario-panel">📋 Simulasi Kasus IASC</button><button id="live-tab" type="button" role="tab" aria-selected="false" aria-controls="live-panel" tabindex="-1">🌐 Live Scanner per Chain</button></div>
+  <div class="app-shell">
+    <aside class="app-sidebar" aria-label="Navigasi investigasi">
+      <a class="brand" href="/" aria-label="Crypto Trails · AML Crypto Intelligence"><span class="brand-mark"><svg viewBox="0 0 28 28" aria-hidden="true"><circle cx="7" cy="7" r="3"/><circle cx="21" cy="10" r="3"/><circle cx="9" cy="22" r="3"/><path d="m10 8 8 2M8 10l1 9m3 1 7-8"/></svg></span><span><b>Crypto Trails</b><small>AML Crypto Intelligence</small></span></a>
+      <div class="team-switch"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21h18M5 21V9l7-6 7 6v12M9 21v-7h6v7"/></svg><span><strong>Tim Kepatuhan</strong><small>Workspace investigasi</small></span></div>
+      <div class="sidebar-caption">INVESTIGASI</div>
+      <nav class="main-navigation" aria-label="Menu utama"><button id="nav-graph" class="nav-item active" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6h.01M18 7h.01M7 18h.01M8 6l7 1M7 9v6m3 2 6-7M3 6a3 3 0 1 0 6 0 3 3 0 1 0-6 0m12 1a3 3 0 1 0 6 0 3 3 0 1 0-6 0M4 18a3 3 0 1 0 6 0 3 3 0 1 0-6 0"/></svg><span>Crypto Trails</span></button><button id="nav-cases" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h7l2 2h9v12H3Z"/></svg><span>Kasus</span></button><button id="nav-addresses" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 10c0 6-8 11-8 11S4 16 4 10a8 8 0 1 1 16 0ZM9 10a3 3 0 1 0 6 0 3 3 0 1 0-6 0"/></svg><span>Telusuri alamat</span></button><button id="nav-evidence" class="nav-item" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m12 3 8 4v6c0 5-8 8-8 8s-8-3-8-8V7Zm-4 9 3 3 5-6"/></svg><span>Bukti & tindak lanjut</span></button></nav>
+      <div id="case-controls" class="left-panel panel">
+        <div class="panel-title"><h2>Kasus aktif</h2></div>
+        <div class="mode-tabs" role="tablist" aria-label="Mode investigasi"><button id="scenario-tab" type="button" role="tab" aria-selected="true" aria-controls="scenario-panel">Kasus demo</button><button id="live-tab" type="button" role="tab" aria-selected="false" aria-controls="live-panel" tabindex="-1">Live scanner</button></div>
         <div class="panel-body">
           <section id="scenario-panel" role="tabpanel" aria-labelledby="scenario-tab">
-          <div class="section-caption">SKENARIO DEMONSTRASI <span id="scenario-count">— KASUS</span></div>
+          <div class="section-caption">PILIH KASUS DEMO <span id="scenario-count">— KASUS</span></div>
           <div id="scenarios" class="scenario-list" aria-label="Pilih skenario"><div class="skeleton">Mengambil skenario…</div></div>
-          <button id="run-scenario-button" class="button primary run-case-button" type="button">🔍 Jalankan Pelacakan Multi-Chain</button><button id="sidebar-animate-button" class="button secondary run-case-button" type="button">▶ Putar Animasi Aliran Dana</button>
+          <button id="run-scenario-button" class="button primary run-case-button" type="button">Jalankan pelacakan</button><button id="sidebar-animate-button" class="button secondary run-case-button" type="button">Putar aliran dana</button>
           <button id="manual-button" class="manual-button" type="button">+ Input handoff manual</button>
           <details class="report-details">
             <summary><span>⚙️ Ubah Parameter Input FNA (Opsional)</span><span class="chevron">⌄</span></summary>
@@ -81,48 +63,78 @@
 <label id="cross-chain-option" class="checkbox-label"><input id="live-cross-chain" name="auto_scan_cross_chain" type="checkbox"><span>✅ Auto-Scan Cross-Chain Bridge ke Jaringan EVM Lain<small>Aktivitas alamat sama dan waktu berdekatan adalah kandidat korelasi, bukan bukti bridge terkonfirmasi.</small></span></label><div class="live-options"><label>Hop Depth<select id="live-hops" name="max_hops"><option value="1">1 Hop</option><option value="2">2 Hops</option><option value="3">3 Hops</option><option value="4">4 Hops</option><option value="5">5 Hops</option><option value="6" selected>6 Hops</option></select></label><label>Filter Aset<select id="live-token" name="token_filter"><option value="ALL">Semua</option><option value="USDT">USDT</option><option value="ETH">Native (ETH / BNB / POL)</option></select></label></div>
               <label class="checkbox-label"><input id="live-origin" name="simulate_fna_and_mirror_origin" type="checkbox"><span>Sertakan Hulu FNA Money Trails & PAKD Mirror DB <small>Simulasi hulu, terpisah dari transaksi mainnet asli.</small></span></label>
               </details>
-              <button id="live-trace-button" class="button primary live-trace-button" type="submit">🌐 Jalankan Live Scanner</button>
+              <button id="live-trace-button" class="button primary live-trace-button" type="submit">Jalankan live scanner</button>
               <p id="live-status" class="live-status" role="status" aria-live="polite">Hingga 6 hop · scanner utama pada hop 1–3 → Crypto APIs Free pada hop 4–6; kelanjutan dibatasi anggaran.</p>
             </form>
           </section>
         </div>
         <div class="panel-foot"><span class="status-dot"></span><span>API PAKD sintetis · multichain live opsional</span></div>
-      </aside>
+      </div>
 
-      <section class="graph-panel panel" aria-labelledby="graph-title">
+
+      <details class="workflow-details"><summary>Panduan alur investigasi</summary>    <nav class="investigation-stepper" aria-label="Empat langkah investigasi"><ol>
+      <li data-step="1"><span>1</span><div><strong>Handoff PUJK</strong><small>FNA’s Money Trails</small></div></li>
+      <li data-step="2"><span>2</span><div><strong>Cek PAKD Mirror API</strong><small>Temukan sebaran chain</small></div></li>
+      <li data-step="3"><span>3</span><div><strong>Lacak tiap blockchain</strong><small>BTC · Solana · Ethereum</small></div></li>
+      <li data-step="4"><span>4</span><div><strong>Rekomendasi & keputusan</strong><small>Diputuskan PUJK / PAKD</small></div></li>
+    </ol></nav>
+</details>
+      <div class="sidebar-footer"><div class="analyst-profile"><span class="analyst-avatar">IA</span><span><strong>Analis investigasi</strong><small>Workspace lokal · PoC</small></span></div><button id="theme-toggle" type="button" class="button theme-toggle" aria-pressed="false" aria-label="Aktifkan Light mode">☀ Light</button></div>
+    </aside>
+    <main>
+      <div class="breadcrumb"><span>Kasus</span><span>/</span><span id="case-id">Memuat kasus…</span><span id="source-tag" class="simulation-tag">LAB · SIMULASI</span></div>
+      <section class="page-heading"><div class="heading-copy"><div class="heading-title"><h1 id="case-title">Alur dana · Crypto Trails</h1><span id="risk-summary" class="risk-summary" data-level="unknown">Belum dinilai</span><span id="risk-summary-value" class="risk-summary-value"></span></div><p id="case-description">Ikuti jejak dana dari handoff bank, PAKD, dan blockchain dalam satu ruang investigasi.</p></div><div class="heading-actions"><div id="time-range" class="time-range" role="group" aria-label="Rentang waktu transaksi"><button type="button" data-days="7" aria-pressed="false" title="7 hari">7H</button><button type="button" data-days="30" aria-pressed="false" title="30 hari">30H</button><button type="button" data-days="90" aria-pressed="false" title="90 hari">90H</button><button type="button" data-days="ALL" aria-pressed="true">Semua</button></div><button id="mirror-db-button" class="button secondary mirror-open" type="button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 3h11l3 3v15H5Zm3 6h8m-8 4h8m-8 4h5"/></svg>Log API & bukti</button><button id="export-button" class="button primary" type="button" title="Unduh bukti investigasi JSON" aria-label="Unduh bukti investigasi JSON"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v12m-4-4 4 4 4-4M5 16v4h14v-4"/></svg>Ekspor bukti</button></div></section>
+      <p id="time-range-note" class="time-range-note">Rentang waktu menyaring transaksi yang sudah dimuat dalam trace.</p>
+    <section class="metrics" aria-label="Ringkasan investigasi" aria-live="polite">
+      <article class="metric"><span class="metric-label"><span id="metric-loss-label">TOTAL KERUGIAN</span> <span class="metric-symbol">↗</span></span><strong id="metric-loss">—</strong><small id="metric-loss-note">Nilai laporan korban</small></article>
+      <article class="metric"><span class="metric-label"><span id="metric-traced-label">DANA TERLACAK</span> <span class="metric-symbol">⌁</span></span><strong id="metric-traced">—</strong><small id="metric-crypto">— USDT · lintas jalur</small></article>
+      <article class="metric"><span class="metric-label">KEDALAMAN JEJAK <span class="metric-symbol">⋮</span></span><strong id="metric-hops">— <em>hop</em></strong><small>FNA · Scoped API · Multichain</small></article>
+      <article class="metric recovery-metric"><span class="metric-label">POTENSI RECOVERY <span class="metric-symbol">◈</span></span><strong id="metric-recovery">—</strong><small id="metric-recovery-note">Estimasi skenario sintetis</small></article>
+    </section>
+
+
+      <div class="workspace">
+        <section class="graph-panel panel" aria-labelledby="graph-title">
+          <div class="graph-header"><div><h2 id="graph-title">Alur dana</h2><p>Handoff sumber → wallet perantara → tujuan dana</p></div><div class="graph-header-actions"><button id="fit-button" class="button secondary" type="button" title="Pas-kan seluruh grafik" aria-label="Pas-kan seluruh grafik"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11a9 9 0 1 0 3-6M3 3v6h6"/></svg>Reset</button></div></div>
+        <div id="chain-filters" class="chain-filters" role="group" aria-label="Filter jalur blockchain"></div>
+
+          <details class="case-context"><summary>Ringkasan kasus & jalur blockchain</summary>
         <section class="executive-summary" aria-labelledby="executive-title"><div class="section-caption">RINGKASAN EKSEKUTIF</div><h2 id="executive-title">Memuat ringkasan perkara…</h2><p id="executive-narrative" aria-live="polite">Ringkasan dan sebaran chain akan muncul setelah pelacakan.</p></section>
         <div id="chain-dispersal-cards" class="chain-dispersal-cards" aria-label="Ringkasan sebaran chain"></div>
-        <div id="chain-filters" class="chain-filters" role="group" aria-label="Filter jalur blockchain"></div>
-        <div class="graph-header"><div><div class="section-caption">DOWNSTREAM INVESTIGATION MAP</div><h2 id="graph-title">Peta aliran dana lintas blockchain</h2></div><div class="graph-header-actions"><button id="export-button" class="icon-button" title="Unduh bukti investigasi JSON" aria-label="Unduh bukti investigasi JSON">↓</button><button id="fit-button" class="icon-button" title="Pas-kan seluruh grafik" aria-label="Pas-kan seluruh grafik">⛶</button></div></div>
         <div id="route-badges" class="route-badges" aria-label="Deteksi jalur"></div>
         <div class="rail-guide" aria-label="Tiga zona arsitektur">
           <span><i class="blue"></i><b>ZONA 1 · FNA’s Money Trails</b><small>PUJK · snapshot handoff</small></span>
           <span class="innovation-zone"><i class="amber"></i><b>ZONA 2 · PAKD Mirror API</b><small>REST API · scoped data PAKD</small></span>
           <span><i class="purple"></i><b>ZONA 3 · Multichain & Bridge</b><small>Scanner utama → Crypto APIs / fixture demo</small></span>
         </div>
+          </details>
         <div id="graph-board" class="graph-board">
           <div id="graph-scroll" class="graph-scroll">
           <svg id="graph" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 650" role="group" aria-label="Grafik interaktif aliran dana. Pilih simpul untuk memeriksa bukti."><defs><marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#438bf0"/></marker><marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#edb256"/></marker><marker id="arrow-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#57d8ef"/></marker><marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#a48af5"/></marker><clipPath id="web3icon-round" clipPathUnits="objectBoundingBox"><circle cx=".5" cy=".5" r=".5"/></clipPath></defs><g id="viewport"><g id="swimlanes"></g><g id="edges"></g><g id="nodes"></g></g></svg>
           </div>
           <div id="graph-loading" class="graph-loading"><div class="loading-orbit"></div><strong>Menyusun jejak aliran dana</strong><span>Mencocokkan handoff FNA dengan Mirror DB dan on-chain…</span></div>
-          <div class="graph-watermark">IASC <span>INTELLIGENCE LAB</span></div>
+          <div id="graph-empty" class="graph-empty" hidden><strong>Tidak ada simpul pada filter ini</strong><span>Pilih chain atau rentang lain untuk melihat data trace.</span></div>
+          <div class="graph-watermark">CRYPTO TRAILS <span>INVESTIGATION WORKSPACE</span></div>
           <div class="zoom-controls"><button id="zoom-out" aria-label="Perkecil grafik">−</button><span id="zoom-level">100%</span><button id="zoom-in" aria-label="Perbesar grafik">+</button></div>
           <div id="animation-step" class="animation-step" hidden></div>
         </div>
         <div class="graph-footer"><div class="legend"><span><i class="blue"></i> FNA / PUJK</span><span><i class="amber"></i> Scoped API PAKD</span><span><i class="purple"></i> Multichain</span><span><i class="green"></i> Disetujui institusi</span></div><button id="animate-button" class="button subtle"><span>▷</span> Animasi aliran dana</button></div>
         <div id="warnings" class="warnings" hidden></div>
-      </section>
-
+        </section>
       <aside class="right-panel panel">
-        <div class="panel-title"><span class="section-number">02</span><h2>Detail & tindak lanjut</h2><span class="inspector-dot"></span></div>
+        <div class="panel-title"><h2>Detail & tindak lanjut</h2><span class="inspector-dot"></span></div>
         <div class="inspector-scroll">
           <section id="inspector" class="inspector"><div class="inspector-empty"><span>⌖</span><h3>Inspeksi simpul</h3><p>Pilih rekening, escrow, atau wallet pada grafik untuk melihat bukti.</p></div></section>
+          <section class="risk-assessment" aria-label="Indikator risiko"><div class="risk-heading"><span>Indikator risiko</span><strong id="risk-value">Belum dinilai</strong></div><div class="risk-track"><span id="risk-meterfill"></span></div><div class="risk-scale"><span>Rendah</span><span>Sedang</span><span>Tinggi</span></div><p id="risk-tier" class="risk-tier">Belum dinilai</p><p id="risk-note" class="risk-note">Skor akan tampil bila tersedia dalam data yang dipilih.</p></section>
+      <article class="metric confirmed-metric"><span class="metric-label">DISETUJUI INSTITUSI <span class="metric-symbol">✓</span></span><strong id="metric-confirmed">—</strong><small id="metric-confirmed-note">Belum ada keputusan freeze</small></article>
           <section class="action-section governance-section"><div class="section-caption">REKOMENDASI & KEPUTUSAN <span class="tiny-tag">SIMULASI</span></div><div id="action-list"></div><p class="action-disclaimer">IASC mengirim rekomendasi dan bukti. Keputusan freeze dilakukan masing-masing PUJK/PAKD. Seluruh dispatch dan callback di lab bersifat simulasi.</p></section>
         </div>
       </aside>
-    </div>
+      </div>
+      <section id="transactions" class="transactions-panel panel" aria-labelledby="transactions-title"><div class="transactions-header"><div><h2 id="transactions-title">Rantai transaksi</h2><p>Transaksi dan relasi dalam trace aktif</p></div><div class="transaction-tools"><label class="search-field"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 21l-5-5M3 10a7 7 0 1 0 14 0 7 7 0 1 0-14 0"/></svg><input id="transaction-search" type="search" aria-label="Cari hash atau alamat transaksi" placeholder="Cari hash / alamat" autocomplete="off"></label><span id="transaction-count" aria-live="polite">0 transaksi</span></div></div><div class="transaction-table-scroll"><table class="transaction-table"><thead><tr><th scope="col">Transaksi</th><th scope="col">Dari</th><th scope="col">Ke</th><th scope="col">Nilai</th><th scope="col">Sumber data</th><th scope="col">Detail</th></tr></thead><tbody id="transaction-body"></tbody></table><p id="transaction-empty" class="transaction-empty" hidden>Tidak ada transaksi yang cocok.</p></div></section>
     <footer class="page-footer"><span>INDONESIA ANTI-SCAM CENTRE · CONCEPT DEMONSTRATOR</span><span>Scoped Mirror API & FNA sintetis · Multichain live read-only · Bukan sistem resmi OJK</span></footer>
-  </main>
+    </main>
+  </div>
   <dialog id="mirror-dialog" class="mirror-dialog" aria-labelledby="mirror-title"><div class="mirror-dialog-head"><div><div class="eyebrow">OJK API CONSUMER → PAKD MIRROR API</div><h2 id="mirror-title">PAKD Mirror API & Scoped Schema</h2></div><button id="mirror-close" class="icon-button" type="button" aria-label="Tutup inspector PAKD Mirror API">×</button></div><p class="mirror-disclaimer">OJK mengonsumsi REST API PAKD, bukan koneksi SQL langsung. Scoped Mirror DB berada di sisi provider PAKD. Demo memakai HTTP ASGI lokal dan data sintetis; pemilihan field ini menunjukkan rancangan minimisasi data, bukan sertifikasi kepatuhan hukum.</p><div id="mirror-content" class="mirror-content" aria-live="polite"></div><details class="modal-case-details"><summary>Detail bukti perkara & aktivitas investigasi</summary>          <section class="pakd-section"><div class="section-caption">PAKD MIRROR API · HASIL LOOKUP <span id="pakd-count">0</span></div><div id="pakd-list"></div></section>
           <section class="evidence-section"><div class="section-caption">BUKTI P2P ESCROW <span id="evidence-count">0</span></div><div id="evidence-list"><p class="muted small">Bukti akan tampil setelah penelusuran.</p></div></section>
           <section class="activity-section"><div class="section-caption">LOG INVESTIGASI</div><ol id="activity-log" class="activity-log"></ol></section>

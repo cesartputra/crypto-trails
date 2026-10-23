@@ -184,7 +184,11 @@ Evidence packet memuat snapshot FNA, respons API PAKD, rincian withdrawal/cabang
 
 ## Pengujian dan batas operasional
 
-Jalankan `python -m pytest -q`, `node tests/frontend_theme_selfcheck.cjs`, dan `node tests/frontend_guided_selfcheck.cjs`. Suite memakai SQLite provider nyata, HTTP ASGI dan HTTP/RPC mock agar dapat berjalan offline; smoke jaringan dijalankan terpisah.
+Jalankan `python -m pytest -q`, `node tests/frontend_theme_selfcheck.cjs`, `node tests/frontend_guided_selfcheck.cjs`, dan `node tests/frontend_dashboard_selfcheck.cjs`. Suite memakai SQLite provider nyata, HTTP ASGI dan HTTP/RPC mock agar dapat berjalan offline; smoke jaringan dijalankan terpisah.
+
+Dashboard memiliki sidebar kasus/live scanner, kartu graph, inspector, pencarian transaksi, serta light/dark mode. Pilihan **7H / 30H / 90H / Semua** berarti hari dan hanya menyaring sampel yang sudah dimuat; tidak meminta riwayat tambahan dari provider. Batas waktu live dihitung dari waktu sekarang, sedangkan skenario sintetis relatif terhadap timestamp transaksi terakhir pada fixture. Transaksi tanpa timestamp tetap terlihat pada Semua. Filter tidak mengubah bukti asli atau isi ekspor JSON.
+
+Indikator risiko memakai `taint_score_pct` yang tersedia pada fixture sintetis, dengan ambang warna visual 0–39 rendah, 40–69 sedang dan 70–100 tinggi. Nilai header adalah skor fixture tertinggi dalam trace, sementara inspector memakai skor simpul yang dipilih. Ini bukan model risiko AML yang terverifikasi. Transaksi/hasil live tanpa skor menampilkan **Belum dinilai**; angka contoh 92 tidak ditanam sebagai skor live.
 
 Smoke publik 22 Oktober 2026 berhasil mengakses Mempool.space, Solana Mainnet RPC dan Ethereum Blockscout. Pada sampel yang diperiksa tidak ada outbound native yang dapat diurai; hasil kosong bukan bukti tidak adanya transaksi sepanjang riwayat. Solana tetap mencatat signature gagal, instruksi yang tidak didukung serta versi transaksi yang belum didukung tanpa mengarang transfer. Akses Etherscan dengan key/kuota akun dan konektor PAKD produksi belum diuji langsung.
 

@@ -2,7 +2,7 @@
 
 const $ = (selector) => document.querySelector(selector);
 const NS = "http://www.w3.org/2000/svg";
-const state = { scenarios: [], scenarioId: null, graph: null, selected: null, selectedEdge: null, mode: "scenario", positions: new Map(), scale: 1, x: 0, y: 0, animation: 0, request: 0, packets: new Map(), busyRequests: new Set(), selectedRequestId: null, decisionDrafts: new Map(), logs: [], baseWidth: 1160, baseHeight: 650, viewportWidth: 0, chainFilter: "ALL", viewNodes: [], viewEdges: [], branchByNode: new Map(), lanes: [], currentStep: 3 };
+const state = { scenarios: [], scenarioId: null, graph: null, selected: null, selectedEdge: null, mode: "scenario", positions: new Map(), scale: 1, x: 0, y: 0, animation: 0, request: 0, packets: new Map(), busyRequests: new Set(), selectedRequestId: null, decisionDrafts: new Map(), logs: [], baseWidth: 1160, baseHeight: 650, viewportWidth: 0, chainFilter: "ALL", timeRange: "ALL", viewNodes: [], viewEdges: [], branchByNode: new Map(), lanes: [], currentStep: 3 };
 const idr = (value) => new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value || 0));
 const number = (value, digits = 2) => new Intl.NumberFormat("id-ID", { maximumFractionDigits: digits }).format(Number(value || 0));
 const short = (value, size = 20) => String(value || "").length > size ? `${String(value).slice(0, size - 2)}…` : String(value || "");
@@ -124,6 +124,12 @@ function beginTrace(live = false) {
   $("#swimlanes").replaceChildren();
   $("#chain-dispersal-cards").replaceChildren();
   $("#chain-filters").replaceChildren();
+  $("#transaction-body")?.replaceChildren();
+  if ($("#transaction-count")) $("#transaction-count").textContent = "Menunggu data";
+  if ($("#transaction-empty")) $("#transaction-empty").hidden = false;
+  if ($("#graph-empty")) $("#graph-empty").hidden = true;
+  if ($("#case-title")) $("#case-title").textContent = live ? "Mengambil aktivitas wallet…" : "Menyusun alur dana…";
+  if ($("#case-description")) $("#case-description").textContent = "Menunggu respons sumber data penelusuran.";
   $("#executive-title").textContent = live ? "Mengambil aktivitas blockchain…" : "Menyusun ringkasan perkara…";
   $("#executive-narrative").textContent = "Menunggu respons sumber data.";
   state.chainFilter = "ALL"; state.currentStep = live ? 3 : 2; renderStepper();
@@ -402,6 +408,9 @@ function renderCaseSummary() {
 function renderMetrics() {
   const graph = state.graph;
   const live = graph.simulation === false;
+  const scenario = state.scenarios.find((item) => item.id === graph.scenario_id);
+  if ($("#case-title")) $("#case-title").textContent = live ? `Alur dana · ${chainInfo(graph.live_metadata?.source_chain)?.badge || "Wallet publik"}` : `Alur dana · ${scenario?.title || "Handoff manual"}`;
+  if ($("#case-description")) $("#case-description").textContent = live ? `${graph.nodes.length} simpul dan ${graph.edges.filter(isLiveTransfer).length} relasi publik pada sampel terbaru. Kepemilikan dan hubungan dengan dana laporan belum terverifikasi.` : scenario?.description || "Handoff FNA dan bukti PAKD pada perkara aktif. Data skenario serta keputusan institusi bersifat sintetis.";
   $("#source-tag").textContent = live ? "LIVE · MULTICHAIN" : "LAB · SIMULASI";
   $("#source-tag").classList.toggle("is-live", live);
   $("#case-id").textContent = live ? `LIVE MAINNET · ${short(graph.trace_id, 15)}` : `${graph.iasc_ticket_id} · ${graph.fna_trail_id}`;
@@ -421,6 +430,77 @@ function renderMetrics() {
   const pending = decisions.filter((request) => request.request_status === "SENT_WAITING_DECISION").length;
   $("#metric-confirmed-note").textContent = live ? "Tidak ada freeze otomatis dari hasil live" : `${approved} keputusan positif · ${pending} menunggu · simulasi`;
   $("#route-badges").replaceChildren(...(graph.route_badges || []).map((badge) => el("span", "route-badge", friendly(badge))));
+}
+
+function timeFilteredEdges(graph, days = "ALL", now = Date.now()) {
+  if (!graph) return [];
+  if (!["7", "30", "90"].includes(String(days))) return graph.edges;
+  const timestamps = graph.edges.map((edge) => Date.parse(edge.timestamp)).filter(Number.isFinite);
+  const reference = graph.simulation === true ? Math.max(...timestamps) : now;
+  const start = reference - Number(days) * 86400000;
+  return graph.edges.filter((edge) => { const timestamp = Date.parse(edge.timestamp); return Number.isFinite(timestamp) && timestamp >= start && timestamp <= reference; });
+}
+
+function transactionRows(graph, chain = "ALL", query = "", days = "ALL", now = Date.now()) {
+  if (!graph) return [];
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const branches = graphBranches(graph);
+  const search = query.trim().toLowerCase();
+  return timeFilteredEdges(graph, days, now).filter((edge) => {
+    const source = byId.get(edge.source) || {}, target = byId.get(edge.target) || {};
+    const edgeChain = chainName(edge.chain || edge.metadata?.chain || branches.get(edge.source) || branches.get(edge.target) || source.chain || target.chain);
+    if (chain !== "ALL" && edgeChain && edgeChain !== chain) return false;
+    return !search || [edge.tx_hash, edge.label, edge.asset, edge.edge_type, source.address, source.account, source.label,
+      target.address, target.account, target.label].some((value) => String(value || "").toLowerCase().includes(search));
+  });
+}
+
+function renderTransactions() {
+  const body = $("#transaction-body");
+  if (!body) return;
+  const matches = transactionRows(state.graph, state.chainFilter, $("#transaction-search")?.value || "", state.timeRange);
+  const nodes = new Map((state.graph?.nodes || []).map((node) => [node.id, node]));
+  body.replaceChildren(...matches.slice(0, 50).map((edge) => {
+    const row = el("tr"), transaction = el("td"), from = nodes.get(edge.source), to = nodes.get(edge.target);
+    const link = isLiveRecord(edge) && edge.tx_hash ? explorerLink("tx", edge.tx_hash, short(edge.tx_hash, 20), edge) : null;
+    transaction.append(link || el("strong", "", short(edge.label || friendly(edge.edge_type), 32)));
+    if (edge.timestamp) transaction.append(el("small", "transaction-time", dateTime(edge.timestamp)));
+    const source = el("td", "transaction-address", short(from?.address || from?.account || from?.label || edge.source, 23));
+    const target = el("td", "transaction-address", short(to?.address || to?.account || to?.label || edge.target, 23));
+    source.title = from?.address || from?.account || from?.label || edge.source;
+    target.title = to?.address || to?.account || to?.label || edge.target;
+    const amount = edge.asset && edge.crypto_amount != null ? `${number(edge.crypto_amount, 8)} ${edge.asset}` : edge.amount_idr != null ? idr(edge.amount_idr) : "—";
+    const evidence = el("td"), live = isLiveRecord(edge);
+    evidence.append(el("span", `table-evidence ${live ? "live" : "synthetic"}`, isCandidateEdge(edge) ? "Kandidat korelasi" : live ? "Mainnet" : "Sintetis"));
+    const action = el("td"), button = el("button", "transaction-detail", "Lihat ↗");
+    button.type = "button"; button.setAttribute("aria-label", `Inspeksi transaksi ${edge.label || edge.tx_hash || edge.id}`);
+    button.addEventListener("click", () => { selectEdge(edge.id); $(".right-panel")?.scrollIntoView({ block: "nearest", behavior: "smooth" }); });
+    action.append(button); row.append(transaction, source, target, el("td", "transaction-amount", amount), evidence, action);
+    return row;
+  }));
+  if ($("#transaction-count")) $("#transaction-count").textContent = `${Math.min(matches.length, 50)} dari ${matches.length} relasi${matches.length > 50 ? " · maks. 50 baris" : ""}`;
+  if ($("#transaction-empty")) { $("#transaction-empty").textContent = state.graph ? "Tidak ada transaksi yang cocok dengan pencarian, waktu atau filter chain." : "Transaksi akan tampil setelah penelusuran."; $("#transaction-empty").hidden = matches.length > 0; }
+  if ($("#time-range-note")) $("#time-range-note").textContent = state.timeRange === "ALL" ? "Semua waktu pada sampel yang sudah dimuat; bukan seluruh riwayat blockchain." : `${state.timeRange} hari ${state.graph?.simulation === true ? "relatif transaksi terakhir pada fixture" : "terakhir dari waktu saat ini"}; hanya memfilter sampel yang sudah dimuat. Transaksi tanpa waktu tidak ditampilkan.`;
+}
+
+function riskAssessment(graph, node) {
+  const raw = node?.taint_score_pct;
+  const score = Number(raw);
+  if (graph?.simulation !== true || raw == null || typeof raw === "boolean" || String(raw).trim() === "" || !Number.isFinite(score) || score < 0 || score > 100) return { score: null, tier: "Belum dinilai", level: "unknown" };
+  return { score, tier: score >= 70 ? "Tinggi" : score >= 40 ? "Sedang" : "Rendah", level: score >= 70 ? "high" : score >= 40 ? "medium" : "low" };
+}
+
+function renderRiskAssessment() {
+  const graph = state.graph, selected = graph?.nodes.find((node) => node.id === state.selected);
+  const assessment = riskAssessment(graph, selected);
+  const scores = (graph?.nodes || []).map((node) => riskAssessment(graph, node).score).filter((score) => score != null);
+  const summary = riskAssessment(graph, scores.length ? { taint_score_pct: Math.max(...scores) } : null);
+  if ($("#risk-summary")) { $("#risk-summary").textContent = summary.score == null ? "Belum dinilai" : `Risiko demo · ${summary.tier}`; $("#risk-summary").dataset.level = summary.level; }
+  if ($("#risk-summary-value")) $("#risk-summary-value").textContent = summary.score == null ? "—" : `${number(summary.score, 1)} / 100`;
+  if ($("#risk-value")) $("#risk-value").textContent = assessment.score == null ? "Belum dinilai" : `${number(assessment.score, 1)} / 100`;
+  if ($("#risk-tier")) { $("#risk-tier").textContent = assessment.score == null ? "Indikator belum tersedia" : `Indikator risiko · ${assessment.tier}`; $("#risk-tier").dataset.level = assessment.level; }
+  if ($("#risk-note")) $("#risk-note").textContent = assessment.score == null ? "Tidak ada skor yang tersedia untuk bukti ini. Aktivitas publik tidak menentukan risiko AML secara otomatis." : "Berdasarkan skor taint fixture; bukan penilaian risiko AML terverifikasi. Ambang warna visual: 0–39 rendah, 40–69 sedang, 70–100 tinggi.";
+  if ($("#risk-meterfill")) { $("#risk-meterfill").style.width = `${assessment.score ?? 0}%`; $("#risk-meterfill").dataset.level = assessment.level; $("#risk-meterfill").parentElement?.setAttribute("aria-label", assessment.score == null ? "Skor risiko belum dinilai" : `Indikator taint demo ${number(assessment.score, 1)} dari 100`); }
 }
 
 function nodeTheme(node) {
@@ -448,23 +528,11 @@ function decisionStyle(decision) {
 }
 
 function visibleGraph() {
-  const graph = state.graph, byId = new Map(graph.nodes.map((node) => [node.id, node]));
-  const parents = new Map(graph.nodes.map((node) => [node.id, []]));
-  for (const edge of graph.edges) if (parents.has(edge.target)) parents.get(edge.target).push(edge.source);
-  const branches = new Map();
-  function branch(nodeId, visited = new Set()) {
-    if (branches.has(nodeId)) return branches.get(nodeId);
-    if (visited.has(nodeId)) return null;
-    visited.add(nodeId);
-    const node = byId.get(nodeId);
-    if (!node) return null;
-    const explicit = node.chain_branch || node.metadata?.chain_branch || (node.node_zone === "ONCHAIN_WALLET" ? node.chain || node.metadata?.chain : null);
-    if (explicit) { const name = chainName(explicit); branches.set(nodeId, name); return name; }
-    const inherited = new Set((parents.get(nodeId) || []).map((id) => branch(id, new Set(visited))).filter(Boolean));
-    const result = inherited.size === 1 ? [...inherited][0] : null;
-    branches.set(nodeId, result); return result;
-  }
-  for (const node of graph.nodes) branch(node.id);
+  const filtered = state.timeRange && state.timeRange !== "ALL" ? timeFilteredEdges(state.graph, state.timeRange) : state.graph.edges;
+  const connected = new Set(filtered.flatMap((edge) => [edge.source, edge.target]));
+  const graph = filtered === state.graph.edges ? state.graph : { ...state.graph, edges: filtered,
+    nodes: state.graph.nodes.filter((node) => connected.has(node.id) || node.metadata?.is_seed_wallet || node.metadata?.is_initial_wallet || /SEED|INITIAL/.test(node.node_type)) };
+  const branches = graphBranches(state.graph);
   const requestTargets = new Set((graph.governance_requests || []).map((request) => request.target_node_id));
   const hidden = new Set(graph.nodes.filter((node) => /^(PAKD_FIAT_DEPOSIT|PAKD_CRYPTO_CONVERSION)$/.test(node.node_type) && !requestTargets.has(node.id)).map((node) => node.id));
   const visible = graph.nodes.filter((node) => !hidden.has(node.id) && (state.chainFilter === "ALL" || !branches.get(node.id) || branches.get(node.id) === state.chainFilter));
@@ -485,32 +553,51 @@ function visibleGraph() {
   state.branchByNode = branches;
   return { nodes: visible, edges };
 }
+function graphBranches(graph) {
+  const byId = new Map(graph.nodes.map((node) => [node.id, node]));
+  const parents = new Map(graph.nodes.map((node) => [node.id, []]));
+  for (const edge of graph.edges) if (parents.has(edge.target)) parents.get(edge.target).push(edge.source);
+  const branches = new Map();
+  function branch(nodeId, visited = new Set()) {
+    if (branches.has(nodeId)) return branches.get(nodeId);
+    if (visited.has(nodeId)) return null;
+    visited.add(nodeId);
+    const node = byId.get(nodeId);
+    if (!node) return null;
+    const explicit = node.chain_branch || node.metadata?.chain_branch || (node.node_zone === "ONCHAIN_WALLET" ? node.chain || node.metadata?.chain : null);
+    if (explicit) { const name = chainName(explicit); branches.set(nodeId, name); return name; }
+    const inherited = new Set((parents.get(nodeId) || []).map((id) => branch(id, new Set(visited))).filter(Boolean));
+    const result = inherited.size === 1 ? [...inherited][0] : null;
+    branches.set(nodeId, result); return result;
+  }
+  for (const node of graph.nodes) branch(node.id);
+  return branches;
+}
+
 function layoutNodes() {
   const view = visibleGraph(); state.viewNodes = view.nodes; state.viewEdges = view.edges;
   state.viewportWidth = Math.max(300, $("#graph-scroll").clientWidth);
   const shared = view.nodes.filter((node) => !state.branchByNode.get(node.id));
   const sharedRanks = [...new Set(shared.map((node) => Number(node.hop) || 0))].sort((a, b) => a - b);
-  const sharedWidth = shared.length ? Math.max(325, 90 + sharedRanks.length * 145) : 0;
-  const branchNames = caseChains().filter((chain) => state.chainFilter === "ALL" || state.chainFilter === chain);
+  const sharedWidth = shared.length ? 255 : 0;
+  const branchNames = caseChains().filter((chain) => (state.chainFilter === "ALL" || state.chainFilter === chain) && view.nodes.some((node) => state.branchByNode.get(node.id) === chain));
   state.positions.clear(); state.lanes = [];
   let top = 58, furthest = sharedWidth + 180;
   for (const chain of branchNames) {
     const nodes = view.nodes.filter((node) => state.branchByNode.get(node.id) === chain), groups = new Map();
     for (const node of nodes) { const hop = Number(node.hop) || 0; if (!groups.has(hop)) groups.set(hop, []); groups.get(hop).push(node); }
     const ranks = [...groups.keys()].sort((a, b) => a - b);
-    const height = Math.max(225, ...[...groups.values()].map((group) => group.length * 155 + 70));
+    const height = Math.max(225, ...[...groups.values()].map((group) => group.length * 110 + 85));
     state.lanes.push({ chain, top, height });
     ranks.forEach((rank, column) => groups.get(rank).forEach((node, index, group) => {
-      state.positions.set(node.id, { x: sharedWidth + 100 + column * 185, y: top + height / 2 - 20 + (index - (group.length - 1) / 2) * 155 });
+      state.positions.set(node.id, { x: sharedWidth + 110 + column * 230, y: top + height / 2 - 20 + (index - (group.length - 1) / 2) * 110 });
     }));
-    furthest = Math.max(furthest, sharedWidth + 100 + Math.max(0, ranks.length - 1) * 185 + 110);
+    furthest = Math.max(furthest, sharedWidth + 110 + Math.max(0, ranks.length - 1) * 230 + 115);
     top += height + 14;
   }
-  state.baseHeight = Math.max(300, top + 10, ...sharedRanks.map((rank) => shared.filter((node) => (Number(node.hop) || 0) === rank).length * 160 + 70));
-  sharedRanks.forEach((rank, column) => {
-    const group = shared.filter((node) => (Number(node.hop) || 0) === rank);
-    group.forEach((node, index) => state.positions.set(node.id, { x: 80 + column * 145, y: state.baseHeight / 2 - 20 + (index - (group.length - 1) / 2) * 160 }));
-  });
+  state.baseHeight = Math.max(300, top + 10, shared.length * 100 + 80);
+  const sharedOrder = sharedRanks.flatMap((rank) => shared.filter((node) => (Number(node.hop) || 0) === rank));
+  sharedOrder.forEach((node, index) => state.positions.set(node.id, { x: 120, y: state.baseHeight / 2 - 20 + (index - (sharedOrder.length - 1) / 2) * 100 }));
   state.baseWidth = Math.max(400, furthest); state.labelLength = 21;
   const svg = $("#graph"); svg.setAttribute("viewBox", `0 0 ${state.viewportWidth} ${$("#graph-scroll").clientHeight || 500}`); svg.style.height = "100%"; svg.style.width = "100%";
   const labels = [];
@@ -527,11 +614,14 @@ function layoutNodes() {
 function edgeGeometry(source, target, index = 0, count = 1) {
   const dx = target.x - source.x, dy = target.y - source.y, length = Math.hypot(dx, dy);
   if (length < 1) {
-    const radius = 75 + index * 30;
-    return { path: `M${source.x + 22} ${source.y - 20} C${source.x + radius} ${source.y - radius} ${source.x + radius} ${source.y + radius} ${source.x + 25} ${source.y + 15}`, labelX: source.x + radius * .8, labelY: source.y - 24 - index * 20 };
+    const radius = 140 + index * 30;
+    return { path: `M${source.x + 98} ${source.y - 18} C${source.x + radius} ${source.y - radius} ${source.x + radius} ${source.y + radius} ${source.x + 100} ${source.y + 18}`, labelX: source.x + radius, labelY: source.y - 38 - index * 20 };
   }
-  const sx = source.x + dx / length * 33, sy = source.y + dy / length * 33;
-  const tx = target.x - dx / length * 38, ty = target.y - dy / length * 38;
+  const ux = dx / length, uy = dy / length;
+  const sourceOffset = Math.min(100 / Math.abs(ux), 38 / Math.abs(uy));
+  const targetOffset = Math.min(104 / Math.abs(ux), 42 / Math.abs(uy));
+  const sx = source.x + ux * sourceOffset, sy = source.y + uy * sourceOffset;
+  const tx = target.x - ux * targetOffset, ty = target.y - uy * targetOffset;
   const offset = count > 1 ? (index - (count - 1) / 2) * 56 : 0;
   const bendX = -dy / length * offset, bendY = dx / length * offset;
   if (Math.abs(dx) < 20) return {
@@ -547,6 +637,7 @@ function edgeGeometry(source, target, index = 0, count = 1) {
 function renderGraph() {
   if (!state.graph) return;
   layoutNodes();
+  if ($("#graph-empty")) $("#graph-empty").hidden = state.viewNodes.length > 0;
   const parallelEdges = new Map();
   for (const edge of state.viewEdges) {
     const key = JSON.stringify([edge.source, edge.target]);
@@ -561,7 +652,7 @@ function renderGraph() {
     const escrow = /ESCROW|SETTLEMENT/.test(edge.edge_type || "");
     const crossChain = isBridgeEdge(edge);
     const candidate = isCandidateEdge(edge);
-    const theme = crossChain ? {color:"#57d8ef",marker:"cyan"} : nodeTheme(escrow ? { node_zone: "CRYPTO_EXCHANGE_BRIDGE" } : fromNode?.node_zone === "ONCHAIN_WALLET" ? fromNode : toNode);
+    const theme = crossChain ? {color:"#258e95",marker:"cyan"} : {color:"#ee6848",marker:"amber"};
     const group = svgEl("g", { class: `edge-group${crossChain ? " cross-chain-edge" : ""}${candidate ? " bridge-candidate" : ""}${state.selectedEdge === edge.id ? " selected" : ""}`, "data-edge-id": edge.id, "data-source": edge.source, "data-target": edge.target, tabindex: 0, role: "button", "aria-label": `Inspeksi transaksi ${edge.label || edge.asset || edge.id}`, "aria-pressed": String(state.selectedEdge === edge.id) });
     const siblings = parallelEdges.get(JSON.stringify([edge.source, edge.target]));
     const { path, labelX, labelY } = edgeGeometry(source, target, siblings.indexOf(edge.id), siblings.length);
@@ -585,39 +676,26 @@ function renderGraph() {
     const decisionTheme = decisionStyle(decision);
     const lock = decision && Number(decision.approved_frozen_amount_idr) > 0;
     const group = svgEl("g", { class: `node${selected ? " selected" : ""}`, transform: `translate(${x} ${y})`, "data-node-id": node.id, tabindex: 0, role: "button", "aria-label": `${node.label}. ${friendly(node.node_type)}. Tampilkan detail.`, "aria-pressed": String(selected) });
-    group.append(svgEl("circle", { class: "node-halo", r: initial ? 39 : 35, fill: "none", stroke: theme.color, "stroke-width": initial ? 1.5 : .7, opacity: initial ? .6 : .2 }));
-    group.append(svgEl("circle", { class: "node-core", r: 26, fill: theme.dark, stroke: lock ? decisionTheme.color : theme.color, "stroke-width": 1.2 }));
+    group.append(svgEl("rect", { class: "node-card", x: -96, y: -33, width: 192, height: 66, rx: 10 }));
+    group.append(svgEl("rect", { class: "node-icon-bg", x: -85, y: -20, width: 34, height: 34, rx: 8 }));
+    group.append(svgEl("rect", { class: "node-card-accent", x: 86, y: -22, width: 4, height: 44, rx: 2, fill: lock ? decisionTheme.color : theme.color }));
     if (node.node_zone === "ONCHAIN_WALLET" && chain?.icon) {
-      group.append(svgEl("image", { href: chain.icon, x: -20, y: -20, width: 40, height: 40, class: "node-chain-icon", "clip-path": "url(#web3icon-round)", "aria-hidden": "true" }));
+      group.append(svgEl("image", { href: chain.icon, x: -80, y: -15, width: 24, height: 24, class: "node-chain-icon", "clip-path": "url(#web3icon-round)", "aria-hidden": "true" }));
     } else {
-      group.append(svgEl("text", { class: "node-icon", y: 1, fill: theme.color }, theme.icon));
+      group.append(svgEl("text", { class: "node-icon", x: -68, y: -1, fill: theme.color }, theme.icon));
     }
-    if (initial) group.append(svgEl("text", { class: "initial-label", y: -52 }, "WALLET AWAL"));
-    if (lock) {
-      group.append(svgEl("circle", { cx: 23, cy: -21, r: 10, fill: "#163d2d", stroke: "#4caf81", "stroke-width": .8 }));
-      group.append(svgEl("text", { class: "node-lock", x: 23, y: -17, fill: decisionTheme.color }, decisionTheme.icon));
-    }
-    if (decision) {
-      const badgeY = initial ? -79 : -55;
-      group.append(svgEl("rect", { x: -49, y: badgeY, width: 98, height: 17, rx: 4, fill: "#101b2a", stroke: decisionTheme.color, "stroke-width": .6 }));
-      group.append(svgEl("text", { class: "decision-node-badge", x: 0, y: badgeY + 11.5, fill: decisionTheme.color }, decisionTheme.short));
-    }
-    if (node.node_zone === "ONCHAIN_WALLET" && chain) {
-      group.append(svgEl("rect", {class:"chain-badge-bg",x:17,y:-42,width:44,height:16,rx:4,fill:"#0b1827",stroke:chain.color,"stroke-width":.7}));
-      group.append(svgEl("text", {class:"chain-badge",x:39,y:-31,fill:chain.color},chain.badge));
-    }
-    if (node.is_bridge_node && node.bridged_to_chain) group.append(svgEl("text", {class:"bridge-route-label",y:99,fill:"#81e1ed"}, `${chainInfo(node.bridged_from_chain || node.chain)?.badge || "?"} → ${chainInfo(node.bridged_to_chain)?.badge || "?"}`));
-    group.append(svgEl("text", { class: "node-label", y: 54 }, short(node.label, state.labelLength)));
-    const subtitle = node.asset && Number(node.crypto_amount) > 0 ? `${number(node.crypto_amount, 5)} ${node.asset}` : Number(node.amount_idr) > 0 ? compactIdr(node.amount_idr) : node.account ? short(node.account, 18) : node.address ? short(node.address, 18) : short(node.entity_label || friendly(node.node_type), 22);
-    group.append(svgEl("text", { class: "node-subtitle", y: 70 }, subtitle));
-    if (node.node_zone === "ONCHAIN_WALLET" && node.taint_score_pct != null) group.append(svgEl("text", { class: "taint-label", y: 84 }, `TAINT ${number(node.taint_score_pct, 1)}%`));
-    else if (node.node_zone === "ONCHAIN_WALLET") group.append(svgEl("text", { class: "taint-label", y: 84 }, "BELUM TERATRIBUSI"));
+    group.append(svgEl("text", { class: "node-card-title", x: -40, y: -11 }, short(node.label, 19)));
+    const subtitle = node.asset && Number(node.crypto_amount) > 0 ? `${number(node.crypto_amount, 5)} ${node.asset}` : Number(node.amount_idr) > 0 ? compactIdr(node.amount_idr) : node.account ? short(node.account, 20) : node.address ? short(node.address, 20) : short(node.entity_label || friendly(node.node_type), 20);
+    group.append(svgEl("text", { class: "node-card-subtitle", x: -40, y: 7 }, short(subtitle, 22)));
+    const status = decision ? decisionTheme.short : initial ? `Wallet awal${chain ? ` · ${chain.badge}` : ""}` : isLiveRecord(node) ? `${chain?.badge || "Mainnet"} · belum teratribusi` : "Bukti sintetis";
+    group.append(svgEl("text", { class: "node-card-status", x: -40, y: 23 }, short(status, 27)));
     group.append(svgEl("title", {}, `${node.label}\n${node.address || node.account || node.entity_label || ""}`));
     group.addEventListener("click", (event) => { if (!dragState.moved) { event.stopPropagation(); selectNode(node.id); } });
     group.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(node.id); } });
     return group;
   }));
   updateTransform();
+  renderTransactions();
 }
 
 function compactIdr(value) {
@@ -687,6 +765,7 @@ function addDetail(list, label, value, className = "") {
 }
 
 function renderInspector() {
+  renderRiskAssessment();
   const inspector = $("#inspector");
   const edge = state.viewEdges.find((candidate) => candidate.id === state.selectedEdge) || state.graph?.edges.find((candidate) => candidate.id === state.selectedEdge);
   if (edge) {
@@ -786,11 +865,11 @@ function renderInspector() {
   }
   if (!incoming.length && metadata.tx_hashes) addDetail(extra, "TX hashes", Array.isArray(metadata.tx_hashes) ? metadata.tx_hashes.join("\n") : metadata.tx_hashes, "mono");
   if (decision) {
-    addDetail(details, "Institusi pemegang keputusan", `${decision.institution_category} · ${decision.institution_name}`);
-    addDetail(details, "Konteks keputusan", decision.metadata?.historical ? "Riwayat pada snapshot FNA; terpisah dari tiket rekomendasi baru" : "Tiket governance pada trace aktif · simulasi");
-    addDetail(details, "Catatan institusi", decision.institution_decision_notes);
-    addDetail(details, "Unit pemberi keputusan", decision.decided_by_unit);
-    addDetail(details, "Nominal disetujui institusi", idr(decision.approved_frozen_amount_idr));
+    addDetail(extra, "Institusi pemegang keputusan", `${decision.institution_category} · ${decision.institution_name}`);
+    addDetail(extra, "Konteks keputusan", decision.metadata?.historical ? "Riwayat pada snapshot FNA; terpisah dari tiket rekomendasi baru" : "Tiket governance pada trace aktif · simulasi");
+    addDetail(extra, "Catatan institusi", decision.institution_decision_notes);
+    addDetail(extra, "Unit pemberi keputusan", decision.decided_by_unit);
+    addDetail(extra, "Nominal disetujui institusi", idr(decision.approved_frozen_amount_idr));
   }
   inspector.replaceChildren(type, heading, entity, status, details);
   if (extra.children.length) inspector.append(technicalDetails);
@@ -1202,6 +1281,25 @@ for (const item of document.querySelectorAll(".investigation-stepper li")) {
   item.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); focusStep(); } });
 }
 $("#export-button").addEventListener("click", () => { if (state.graph) download(`${state.graph.iasc_ticket_id || state.graph.trace_id}-${state.graph.simulation === false ? "live-mainnet" : "bukti-governance-simulasi"}.json`, { ...state.graph, evidence_packets: Object.fromEntries(state.packets) }); });
+$("#transaction-search")?.addEventListener("input", renderTransactions);
+for (const button of document.querySelectorAll("#time-range button")) {
+  button.addEventListener("click", () => {
+    state.timeRange = button.dataset.days;
+    for (const option of document.querySelectorAll("#time-range button")) { const active = option === button; option.classList.toggle("active", active); option.setAttribute("aria-pressed", String(active)); }
+    if (!state.graph) return;
+    stopAnimation(); renderGraph(); fitGraph();
+    if (state.selected && !state.viewNodes.some((node) => node.id === state.selected)) { state.selected = null; renderInspector(); renderActions(); }
+    if (state.selectedEdge && !state.viewEdges.some((edge) => edge.id === state.selectedEdge)) { state.selectedEdge = null; renderInspector(); renderActions(); }
+  });
+}
+for (const [id, target, mode] of [["nav-graph", ".graph-panel"], ["nav-cases", "#case-controls", "scenario"], ["nav-addresses", "#case-controls", "live"], ["nav-evidence", ".right-panel"]]) {
+  $(`#${id}`)?.addEventListener("click", () => {
+    if (mode) setMode(mode);
+    for (const nav of document.querySelectorAll(".main-navigation button")) { const active = nav.id === id; nav.setAttribute("aria-current", active ? "page" : "false"); nav.classList.toggle("active", active); }
+    $(target)?.scrollIntoView({ block: "start", behavior: "smooth" });
+    if (id === "nav-addresses") $("#live-wallet").focus({ preventScroll: true });
+  });
+}
 
 let graphResizeTimer;
 new ResizeObserver(() => {
