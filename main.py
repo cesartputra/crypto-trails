@@ -13,6 +13,8 @@ from schemas import CrossRailGraphResponse, FNAMoneyTrailHandoffInput, SendFreez
 from scenarios import SCENARIOS, get_scenario, scenario_catalog
 from services.etherscan_client import EtherscanClient, EtherscanAPIError, _config
 from services.multichain_scanner import MultichainScanner, ScannerAPIError
+from services.cryptoapis_continuation import CryptoAPIsAPIError
+from services.cryptoapis_config import config as cryptoapis_config, CryptoAPIsConfigurationError
 from services.pakd_api_consumer import PAKDAPIConsumer, PAKDAPIError
 from services.pakd_scoped_mirror_provider import router as pakd_mirror_router
 from services.chains import CHAIN_CONFIG, normalize_chain, explorer_address_url, explorer_tx_url
@@ -101,6 +103,8 @@ async def health():
         mode = "INVALID_ETHERSCAN_CONFIGURATION"
     solana_mode = "SOLSCAN_PRO_API" if _config().get("SOLSCAN_API_KEY", "").strip() else "SOLANA_MAINNET_RPC"
     return {"status": "ok", "simulation": True, "live_provider": mode,
+        "live_hop_strategy": {"initial_max_hops": 3, "continuation_provider": "CRYPTOAPIS", "max_hops": 6},
+        "cryptoapis_configured": bool(cryptoapis_config()['CRYPTOAPIS_API_KEY']),
         "dedicated_scanners": {"BTC": "MEMPOOL_SPACE_WITH_BLOCKSTREAM_FALLBACK", "SOLANA": solana_mode, "EVM": mode},
         "mirror_access": "SCOPED_REST_API_ASGI_DEMO", "supported_chains": list(CHAIN_CONFIG), "governance_mode": "SIMULATED_DISPATCH_AND_INSTITUTION_DECISIONS",
         "fna_mode": "IMPORTED_HANDOFF_ONLY"}
@@ -121,8 +125,10 @@ async def trace_live_wallet(payload: LiveWalletTrailInput):
         result = await MultichainScanner().trace_wallet(
             payload.wallet_address, max_hops=payload.max_hops, token_filter=payload.token_filter, direction=payload.direction,
             source_chain=payload.source_chain, auto_scan_cross_chain=payload.auto_scan_cross_chain, etherscan_api_key=payload.etherscan_api_key)
-    except (EtherscanAPIError, ScannerAPIError, PAKDAPIError) as exc:
+    except (EtherscanAPIError, ScannerAPIError, CryptoAPIsAPIError, PAKDAPIError) as exc:
         raise HTTPException(502, str(exc)) from None
+    except CryptoAPIsConfigurationError as exc:
+        raise HTTPException(503, str(exc)) from None
     except ValueError:
         raise HTTPException(503, "Konfigurasi explorer tidak valid; periksa host resmi pada .env") from None
     nodes, edges = result["nodes"], result["edges"]
@@ -256,8 +262,10 @@ async def expand_address(address: str, trace_id: str = Query(min_length=1, max_l
     if live:
         if canonical == "TRON":
             raise HTTPException(422, "TRON hanya tersedia pada preset sintetis; live scanner mendukung BTC, Solana dan EVM")
+        if source.metadata.get('wallet_hop', 0) >= 6:
+            raise HTTPException(422, "Batas 6 hop wallet tercapai; mulai trace baru untuk melanjutkan")
         try:
-            result = await MultichainScanner().trace_wallet(source.address, max_hops=1, source_chain=canonical)
+            result = await MultichainScanner().expand_wallet(graph, source)
             live_seed = next(node for node in result["nodes"] if node.address and normalize(node.address) == normalize(source.address) and normalize_chain(node.chain) == canonical)
             result["nodes"] = [node for node in result["nodes"] if node.id != live_seed.id]
             for edge in result["edges"]:
@@ -266,8 +274,10 @@ async def expand_address(address: str, trace_id: str = Query(min_length=1, max_l
                 if edge.target == live_seed.id:
                     edge.target = source.id
             result["simulation"] = False
-        except (EtherscanAPIError, ScannerAPIError, PAKDAPIError) as exc:
+        except (EtherscanAPIError, ScannerAPIError, CryptoAPIsAPIError, PAKDAPIError) as exc:
             raise HTTPException(502, str(exc)) from None
+        except CryptoAPIsConfigurationError as exc:
+            raise HTTPException(503, str(exc)) from None
         except ValueError:
             raise HTTPException(503, "Konfigurasi explorer tidak valid") from None
     else:
@@ -282,11 +292,20 @@ async def expand_address(address: str, trace_id: str = Query(min_length=1, max_l
     result["nodes"] = result["nodes"][:max(256 - len(graph.nodes), 0)]
     allowed_ids = existing_ids | {n.id for n in result["nodes"]}
     result["edges"] = [edge for edge in result["edges"] if edge.source in allowed_ids and edge.target in allowed_ids][:max(512 - len(graph.edges), 0)]
-    for node in result["nodes"]:
-        node.hop = source.hop + 1
+    if not live or graph.simulation:
+        for node in result["nodes"]:
+            node.hop = source.hop + 1
     graph.nodes.extend(n for n in result["nodes"] if n.id not in existing_ids)
     edge_ids = {e.id for e in graph.edges}
     graph.edges.extend(e for e in result["edges"] if e.id not in edge_ids)
+    if live and not graph.simulation:
+        metadata, added = graph.live_metadata, result.get('metadata', {})
+        providers = [*metadata.get('provider', '').split(', '), *added.get('provider', '').split(', ')]
+        metadata['provider'] = metadata['scanner_provider'] = ', '.join(dict.fromkeys(filter(None, providers)))
+        metadata['requests_made'] = metadata.get('requests_made', 0) + added.get('expansion_requests_made', 0)
+        metadata['cryptoapis_requests_made'] = metadata.get('cryptoapis_requests_made', 0) + added.get('expansion_cryptoapis_requests_made', 0)
+        metadata['wallet_hops_traced'] = max((n.metadata.get('wallet_hop', 0) for n in graph.nodes), default=0)
+        graph.hop_count = max((n.hop for n in graph.nodes), default=0)
     graph.pakd_api_exchange_logs.extend(PAKDAPICallLog.model_validate(log) for log in result.get("pakd_api_exchange_logs", []))
     state["expansions"][cache_key] = result
     return result

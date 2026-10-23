@@ -35,6 +35,10 @@ flowchart LR
   D --> B[BTC · Mempool / Blockstream]
   D --> S[Solana · Solscan Pro API / Mainnet RPC]
   D --> E[EVM · Etherscan V2 / explorer per chain]
+  B -->|setelah 3 hop| H[Crypto APIs · hop 4–6]
+  S -->|setelah 3 hop| H
+  E -->|setelah 3 hop| H
+  H --> R
   B --> R[Reverse lookup API PAKD]
   S --> R
   E --> R
@@ -83,14 +87,14 @@ Alamat, hash, identitas dan hubungan PAKD pada preset adalah sintetis, meskipun 
 
 ## Live Scanner: BTC, Solana, EVM
 
-Pilih chain dan alamat yang sesuai, lalu jalankan live scanner. Contoh Solana berupa akun publik Wrapped SOL, bukan klaim identitas pengguna. Scanner berbeda digunakan sesuai keluarga chain:
+Pilih chain dan alamat yang sesuai, lalu jalankan live scanner. Default dan batas maksimum adalah **6 hop wallet**: tiga hop awal memakai scanner utama, kemudian Crypto APIs melanjutkan dari wallet batas hop ketiga. Wallet awal tidak dipindai ulang melalui Crypto APIs. Pilihan 1–3 hop hanya memakai scanner utama. Contoh Solana berupa akun publik Wrapped SOL, bukan klaim identitas pengguna.
 
-| Family | Provider | Bukti explorer |
-| --- | --- | --- |
-| Bitcoin | Mempool.space REST; fallback Blockstream Esplora jika provider utama gagal | mempool.space/address/... dan /tx/... |
-| Solana | Solscan Pro API v2 bila key terisi; Mainnet JSON-RPC bila key kosong | solscan.io/account/... dan /tx/... |
-| EVM | Etherscan V2 `chainid` sesuai jaringan; fallback allowlist per chain tanpa key | Etherscan, BscScan, Arbiscan, PolygonScan, BaseScan, Optimism explorer |
-| TRON | Fixture TRC-20 sintetis saja | Tidak ada live TRON scanner |
+| Family | Hop 1–3 | Hop 4–6 | Bukti explorer |
+| --- | --- | --- | --- |
+| Bitcoin | Mempool.space REST; fallback Blockstream Esplora | Crypto APIs Address Latest UTXO | mempool.space/address/... dan /tx/... |
+| Solana | Solscan Pro API v2 bila key terisi; Mainnet JSON-RPC bila key kosong | Crypto APIs Address Latest Solana | solscan.io/account/... dan /tx/... |
+| EVM | Etherscan V2 `chainid` sesuai jaringan; fallback allowlist per chain tanpa key | Crypto APIs Address Latest EVM | Etherscan, BscScan, Arbiscan, PolygonScan, BaseScan, Optimism explorer |
+| TRON | Fixture TRC-20 sintetis saja | Tidak tersedia | Tidak ada live TRON scanner |
 
 **Bitcoin:** riwayat address memakai `/address/{address}/txs`. Bitcoin adalah UTXO: satu transaksi dapat memiliki banyak input, output dan change. Graph menampilkan transaksi dan outputnya tanpa mengklaim bahwa setiap output milik pelaku. Jumlah output bukan nominal dana laporan atau saldo recovery. Alamat dan hash divalidasi, termasuk checksum address.
 
@@ -102,7 +106,11 @@ Pilih chain dan alamat yang sesuai, lalu jalankan live scanner. Contoh Solana be
 
 Live dibatasi halaman terbaru, hop, request, node, edge dan deadline; ini bukan seluruh riwayat dan belum memiliki filter tanggal awal/akhir. Metadata menginformasikan provider, waktu pengambilan, batas dan aktivitas yang tidak didukung. Data live tidak menghasilkan skor taint, nilai IDR, recovery atau freeze otomatis.
 
-UI/API menerima 1–3 hop per pemindaian, dengan default 3 hop. Scanner native membatasi 10 transaksi/signature per alamat, 24 request HTTP, 64 node, 128 edge dan 60 detik; satu hop Bitcoin dapat berisi node transaksi serta node output. Scanner EVM membatasi 15 transaksi per kategori/alamat, 36 request, 64 node, 128 edge dan 90 detik. Batas ini dapat memotong riwayat sebelum seluruh hop tercapai.
+UI/API menerima 1–6 hop per pemindaian, dengan default 6 hop. Fase utama native membatasi 10 transaksi/signature per alamat, 24 request HTTP dan 60 detik; fase utama EVM membatasi 15 transaksi per kategori/alamat, 36 request dan 90 detik. Fase Crypto APIs memakai 10 record per kategori/alamat, satu anggaran bersama untuk seluruh wallet frontier: 24 request/60 detik untuk native atau 36 request/90 detik untuk EVM. Dua fase berarti maksimum 48 request/120 detik native atau 72 request/180 detik EVM; graph otomatis tetap dibatasi 64 node dan 128 edge secara gabungan. Batas ini dapat memotong hasil sebelum hop keenam.
+
+Crypto APIs menggunakan GET pada `https://rest.cryptoapis.io/addresses-latest/...`, dengan key lewat header `X-API-Key`. EVM mencakup Ethereum, BSC (`binance-smart-chain`), Polygon, Arbitrum, Optimism dan Base. Nilai display Decimal tidak dibagi wei/lamports lagi. Token EVM tetap diperiksa terhadap kontrak kanonis USDT/USDC; Bitcoin memakai node transaksi/input/output dan melanjutkan outpoint yang cocok. Solana hanya membaca `nativeMovements`, bukan menyimpulkan transfer dari signer atau perubahan saldo. Status eksekusi Solana tidak disediakan oleh endpoint ini dan tidak diklaim terverifikasi.
+
+**Cakupan Crypto APIs:** transaksi terbaru BTC/EVM hingga 14 hari; Solana hingga 1 hari. Ini hanya berlaku pada fase kelanjutan, bukan pada seluruh hasil fase utama. Tidak ada sinkronisasi Address History atau pengambilan riwayat genesis otomatis. Setiap node/edge mempertahankan provider aslinya; metadata graph memuat provider gabungan, request per fase dan `wallet_hops_traced`. Hop Bitcoin pada layout memiliki lapisan transaksi di antara wallet; metrik live menghitung hop wallet. Perluasan manual setelah hop ketiga juga memakai Crypto APIs dan berhenti pada hop keenam.
 
 ## Konfigurasi `.env`
 
@@ -114,9 +122,13 @@ ETHERSCAN_BASE_URL=https://api.etherscan.io/v2/api
 ETHERSCAN_FALLBACK_EXPLORER_URL=https://eth.blockscout.com/api
 SOLSCAN_API_KEY=
 SOLSCAN_BASE_URL=https://pro-api.solscan.io/v2.0
+CRYPTOAPIS_API_KEY=
+CRYPTOAPIS_BASE_URL=https://rest.cryptoapis.io
 ```
 
 `.env` dibaca otomatis dari folder `main.py`; environment shell lebih utama. Key opsional UI hanya berlaku pada request itu. BTC dan Solana tidak menerima key Etherscan. Key tidak masuk ke graph, log API PAKD, ekspor atau respons error validasi. `.env` diabaikan Git.
+
+Isi `CRYPTOAPIS_API_KEY` dengan key Crypto APIs yang memiliki akses mainnet dan endpoint Address Latest, lalu restart server. Key ini hanya diterima dari `.env`/environment server; tidak ada field Crypto APIs key di UI atau body API. Host selain `https://rest.cryptoapis.io` ditolak. Bila kelanjutan diperlukan tetapi key kosong/tidak valid, API mengembalikan error konfigurasi yang jelas; pilih maksimum 3 hop bila hanya ingin fase awal. Wallet tanpa frontier hop ketiga tidak mengirim request Crypto APIs. Error autentikasi, kredit/paket dan kuota tetap menjadi error tanpa fallback data simulasi.
 
 Isi `SOLSCAN_API_KEY` dengan key [Solscan Pro API v2](https://pro-api.solscan.io/pro-api-docs/v2.0/docs) yang aktif, lalu restart server. Key terisi memilih adapter Solscan; key kosong memilih RPC publik. `SOLSCAN_BASE_URL` hanya menerima endpoint HTTPS resmi `https://pro-api.solscan.io/v2.0`. Environment shell lebih utama daripada `.env`. Simpan key hanya di `.env` lokal; `.env.example` tetap kosong.
 
@@ -129,6 +141,8 @@ Layanan publik dapat menolak permintaan atau terkena rate limit. Scanner mengemb
 ## Bridge EVM dan batas atribusi
 
 Deteksi bridge memakai kamus kontrak terikat chain beserta referensi publik. Auto-scan mencari kandidat penerimaan pada alamat sama di chain tujuan, aset sama, rentang waktu 2 jam, dan toleransi jumlah. Setelah kandidat ditemukan, trailing di chain tujuan dilanjutkan.
+
+Deteksi kandidat bridge otomatis berlaku pada fase scanner utama. Fase Crypto APIs melanjutkan chain setiap wallet frontier; belum mendekode swap/pesan bridge baru pada hop 4–6. Kedalaman tetap dibatasi secara keseluruhan saat pivot, tanpa mengulang kedalaman dari nol.
 
 Garis live berstatus `CANDIDATE_UNVERIFIED`, bukan bukti settlement. Swap, perubahan aset/alamat, relayer dan aktivitas pool dapat memutus atribusi. Decoder penuh swap Uniswap dan pesan bridge belum tersedia. BTC↔Solana↔EVM pada kasus default adalah **fan-out withdrawal dari PAKD**, bukan klaim pelacakan bridge lintas-family secara live.
 
@@ -171,3 +185,5 @@ Uji langsung Solscan dengan konfigurasi lokal pada tanggal tersebut mendapat HTT
 State lokal maksimum 128 trace/1 jam dan database in-memory hilang saat restart. Tidak ada autentikasi lembaga, mTLS, callback mitra produksi atau audit durable. Jalankan pada loopback dengan data sintetis. Integrasi produksi memerlukan perjanjian akses PAKD, dasar pemrosesan, otorisasi perkara, retensi dan monitoring; biaya demo tidak mencerminkan biaya operasi produksi.
 
 Referensi: [Mempool REST](https://mempool.space/docs/api/rest), [Blockstream Esplora](https://github.com/Blockstream/esplora/blob/master/API.md), [Solana signatures](https://solana.com/docs/rpc/http/getsignaturesforaddress), [Solana transactions](https://solana.com/docs/rpc/http/gettransaction), [Solscan account detail](https://pro-api.solscan.io/pro-api-docs/v2.0/reference/v2-account-detail), [Solscan account transfer](https://pro-api.solscan.io/pro-api-docs/v2.0/reference/v2-account-transfer), [Etherscan V2](https://docs.etherscan.io/introduction). Dokumentasi diperiksa pada 22 Oktober 2026.
+
+Integrasi kelanjutan diperiksa terhadap [Crypto APIs overview](https://developers.cryptoapis.io/v-2.2024-12-12-175/RESTapis/general-information/overview), [EVM transactions](https://developers.cryptoapis.io/v-2.2024-12-12-175/RESTapis/address-latest-evm/list-confirmed-transactions-by-address-evm/get), [token transfers](https://developers.cryptoapis.io/v-2.2024-12-12/RESTapis/address-latest-evm/list-confirmed-tokens-transfers-by-address-evm/get), serta endpoint Address Latest UTXO/Solana pada 23 Oktober 2026. Tes memakai fixture HTTP; keberhasilan tes tidak membuktikan izin paket/key live.

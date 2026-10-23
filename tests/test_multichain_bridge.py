@@ -40,6 +40,7 @@ def test_v2_bridge_pivots_and_continues_real_destination_chain(monkeypatch):
     assert len({n.id for n in seed_nodes})>=2
     assert graph['metadata']['requests_made']<=36
     assert any(chain=='42161' for chain,_,_ in calls)
+    assert ('42161', 'balance', A) not in calls, 'The boundary wallet must not restart Etherscan depth from zero'
 
 
 def test_bridge_scenarios_use_destination_pakd_api_and_keep_governance(trace):

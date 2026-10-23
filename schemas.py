@@ -183,7 +183,7 @@ class LiveWalletTrailInput(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     wallet_address: str = Field(min_length=20, max_length=100)
     etherscan_api_key: str | None = Field(default=None, max_length=256, repr=False)
-    max_hops: int = Field(default=3, ge=1, le=3, strict=True)
+    max_hops: int = Field(default=6, ge=1, le=6, strict=True)
     token_filter: Literal["ALL", "ETH", "USDT", "USDC", "BTC", "SOL"] = "ALL"
     direction: Literal["OUTBOUND", "BOTH"] = "OUTBOUND"
     simulate_fna_and_mirror_origin: bool = False

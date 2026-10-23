@@ -69,7 +69,61 @@ class MultichainScanner:
         self.transport = transport
         self.pakd_consumer = pakd_consumer or PAKDAPIConsumer()
 
-    async def trace_wallet(self, wallet_address, source_chain, max_hops=2, token_filter='ALL', direction='OUTBOUND',
+    async def trace_wallet(self, wallet_address, source_chain, max_hops=6, token_filter='ALL', direction='OUTBOUND',
+                           etherscan_api_key=None, auto_scan_cross_chain=False):
+        if type(max_hops) is not int or not 1 <= max_hops <= 6:
+            raise ValueError('max_hops harus 1 sampai 6')
+        chain = normalize_chain(source_chain)
+        result = await self._trace_primary(wallet_address, chain, max_hops=min(max_hops, 3), token_filter=token_filter,
+            direction=direction, etherscan_api_key=etherscan_api_key, auto_scan_cross_chain=auto_scan_cross_chain)
+        for node in result['nodes']:
+            if node.address:
+                node.metadata['wallet_hop'] = node.hop // 2 if normalize_chain(node.chain) == 'BTC' else node.hop
+        metadata = result['metadata']
+        metadata.update(max_hops=max_hops, primary_requests_made=metadata.get('requests_made', 0),
+            cryptoapis_requests_made=0, continuation_status='NOT_REQUESTED' if max_hops <= 3 else 'NO_FRONTIER',
+            hop_strategy={'initial_max_hops': 3, 'continuation_provider': 'CRYPTOAPIS', 'max_hops': max_hops})
+        if max_hops > 3 and any(node.address and node.metadata.get('wallet_hop') == 3 for node in result['nodes']):
+            from services.cryptoapis_continuation import CryptoAPIsContinuation
+            result = await CryptoAPIsContinuation(transport=self.transport, pakd_consumer=self.pakd_consumer).extend(
+                result, source_chain=chain, max_hops=max_hops, token_filter=token_filter,
+                direction=direction, auto_scan_cross_chain=auto_scan_cross_chain)
+            metadata['continuation_status'] = 'TRUNCATED' if metadata.get('truncated') else 'COMPLETE_SAMPLE'
+        metadata['wallet_hops_traced'] = max((n.metadata.get('wallet_hop', 0) for n in result['nodes']), default=0)
+        return result
+
+    async def expand_wallet(self, graph, source):
+        chain = normalize_chain(source.chain)
+        depth = source.metadata.get('wallet_hop', 0)
+        if type(depth) is not int or not 0 <= depth < 6:
+            raise ValueError('Batas 6 hop tercapai')
+        if depth < 3:
+            result = await self.trace_wallet(source.address, chain, max_hops=1,
+                token_filter=graph.live_metadata.get('token_filter', 'ALL'))
+            result['metadata']['expansion_requests_made'] = result['metadata'].get('requests_made', 0)
+            for node in result['nodes']:
+                if node.address:
+                    node.metadata['wallet_hop'] = depth + node.metadata.get('wallet_hop', node.hop // 2 if chain == 'BTC' else node.hop)
+                node.hop += depth * (2 if chain == 'BTC' else 1)
+        else:
+            from services.cryptoapis_continuation import CryptoAPIsContinuation
+            result = {'nodes': [n.model_copy(deep=True) for n in graph.nodes],
+                'edges': [e.model_copy(deep=True) for e in graph.edges], 'warnings': [], 'metadata': dict(graph.live_metadata)}
+            result = await CryptoAPIsContinuation(transport=self.transport, pakd_consumer=self.pakd_consumer).extend(
+                result, chain, max_hops=depth + 1, start_hop=depth, frontier_ids={source.id},
+                token_filter=graph.live_metadata.get('token_filter', 'ALL'))
+            result['metadata']['expansion_requests_made'] = result['metadata']['requests_made'] - graph.live_metadata.get('requests_made', 0)
+            old_nodes, old_edges = {n.id for n in graph.nodes}, {e.id for e in graph.edges}
+            result['nodes'] = [n for n in result['nodes'] if n.id == source.id or n.id not in old_nodes]
+            result['edges'] = [e for e in result['edges'] if e.id not in old_edges]
+        if graph.live_metadata.get('simulated_origin'):
+            for node in result['nodes']:
+                if node.id != source.id:
+                    node.hop += 2
+        result['metadata']['expansion_cryptoapis_requests_made'] = result['metadata'].get('expansion_requests_made', 0) if depth >= 3 else 0
+        return result
+
+    async def _trace_primary(self, wallet_address, source_chain, max_hops=2, token_filter='ALL', direction='OUTBOUND',
                            etherscan_api_key=None, auto_scan_cross_chain=False):
         chain = normalize_chain(source_chain)
         if not is_valid_address(chain, wallet_address):

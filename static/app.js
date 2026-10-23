@@ -134,7 +134,7 @@ function beginTrace(live = false) {
   $("#metric-recovery-note").textContent = live ? "Tidak dihitung dari transaksi publik" : "Estimasi skenario sintetis";
   $("#metric-confirmed-note").textContent = "Menunggu bukti dan keputusan institusi";
   $("#graph-loading strong").textContent = live ? "Mengambil transaksi multichain asli" : "Menyusun jejak aliran dana";
-  $("#graph-loading span").textContent = live ? "Explorer mainnet · permintaan dibatasi untuk menjaga rate limit…" : "Mencocokkan handoff FNA dengan Mirror DB dan on-chain…";
+  $("#graph-loading span").textContent = live ? "Hop 1–3: scanner utama · hop 4–6: Crypto APIs · permintaan dibatasi anggaran API…" : "Mencocokkan handoff FNA dengan Mirror DB dan on-chain…";
   state.logs = []; $("#activity-log").replaceChildren();
   renderInspector(); renderEvidence(); renderPakd(); renderActions();
   $("#graph-loading").hidden = false;
@@ -203,20 +203,22 @@ async function traceLive() {
   if (key && !["BTC", "SOLANA"].includes(payload.source_chain)) payload.etherscan_api_key = key;
   $("#live-api-key").value = "";
   const requestId = beginTrace(true);
-  $("#live-status").textContent = "Mengambil transaksi mainnet. Penelusuran beberapa hop dapat memerlukan beberapa detik…";
+  $("#live-status").textContent = `${liveScanScope({ source_chain: payload.source_chain, max_hops: payload.max_hops })}. Mengambil transaksi mainnet…`;
   try {
     const graph = await api("/api/v1/trail/live-scanner", { method: "POST", body: JSON.stringify(payload) });
     if (requestId !== state.request) return;
     acceptGraph(graph);
-    const provider = graph.live_metadata?.provider || graph.live_metadata?.data_provider || "Explorer Multichain";
+    const provider = scannerLabel(graph.live_metadata?.provider || "Scanner multichain");
     const activity = graph.live_metadata?.activity || [];
     const count = graph.edges.filter(isLiveTransfer).length;
     if (payload.source_chain === "SOLANA") {
-      $("#live-status").textContent = provider === "SOLSCAN_PRO_API" ? `${scannerLabel(provider)}: ${count} transfer SOL native ditampilkan dari sampel terbaru; ${activity.length} signature transfer tercatat. Hasil ini tidak mencakup seluruh aktivitas token.` : `${provider}: ${activity.length} signature tercatat, ${count} transfer SOL terurai. Aktivitas token/instruksi lain dapat dilihat melalui signature di detail akun.`;
+      $("#live-status").textContent = `${provider}: ${activity.length} aktivitas tercatat, ${count} transfer SOL native terurai. Aktivitas token/instruksi lain dapat dilihat melalui signature di detail akun.`;
     } else {
       $("#live-status").textContent = payload.source_chain === "BTC" ? `${provider}: ${count} relasi UTXO diamati. Output merupakan kemungkinan aliran; change dan pemiliknya belum diketahui.` : `${provider}: ${count} transfer asli ditampilkan. Kandidat pivot belum membuktikan perpindahan dana lintas chain.`;
     }
-    if (graph.live_metadata?.fallback_reason === "SOLSCAN_PLAN_REQUIRED") $("#live-status").textContent = "Paket Solscan belum mengizinkan endpoint akun; hasil diambil melalui RPC publik. " + $("#live-status").textContent;
+    $("#live-status").textContent += ` ${liveScanScope({ ...graph.live_metadata, source_chain: payload.source_chain, max_hops: payload.max_hops })}.`;
+    if (graph.live_metadata?.continuation_status === "NO_FRONTIER") $("#live-status").textContent += " Fase awal belum menemukan wallet baru pada hop ketiga; Crypto APIs belum dipanggil.";
+    if (graph.live_metadata?.fallback_reason === "SOLSCAN_PLAN_REQUIRED") $("#live-status").textContent = "Paket Solscan belum mengizinkan endpoint akun; fase awal diambil melalui RPC publik. " + $("#live-status").textContent;
   } catch (error) {
     if (requestId !== state.request) return;
     failTrace(error, true);
@@ -226,7 +228,7 @@ async function traceLive() {
 
 function isLiveRecord(record) {
   const source = String(record?.metadata?.evidence_source || "").toUpperCase();
-  return record?.metadata?.simulation === false || record?.metadata?.is_live === true || (/ETHERSCAN|BLOCKSCOUT|MAINNET|MEMPOOL|BLOCKSTREAM|SOLANA_RPC|SOLSCAN/.test(source) && !/SIMULAT|FIXTURE|SEEDED/.test(source));
+  return record?.metadata?.simulation === false || record?.metadata?.is_live === true || (/CRYPTOAPIS|ETHERSCAN|BLOCKSCOUT|MAINNET|MEMPOOL|BLOCKSTREAM|SOLANA_RPC|SOLSCAN/.test(source) && !/SIMULAT|FIXTURE|SEEDED/.test(source));
 }
 
 const chains = {
@@ -257,8 +259,16 @@ function isCandidateEdge(record) {
 }
 function isBridgeEdge(record) { return /CROSS_CHAIN|BRIDGE_PIVOT/.test(record?.edge_type || ""); }
 function scannerLabel(value) {
-  const labels = { MEMPOOL_SPACE: "Mempool.space", BLOCKSTREAM_ESPLORA: "Blockstream Esplora", SOLANA_MAINNET_RPC: "Solana Mainnet RPC", SOLSCAN_PRO_API: "Solscan Pro API v2", ETHERSCAN_V2: "Etherscan V2", SCENARIO_FIXTURE: "Skenario sintetis" };
+  const labels = { CRYPTOAPIS: "Crypto APIs", MEMPOOL_SPACE: "Mempool.space", BLOCKSTREAM_ESPLORA: "Blockstream Esplora", SOLANA_MAINNET_RPC: "Solana Mainnet RPC", SOLSCAN_PRO_API: "Solscan Pro API v2", ETHERSCAN: "Etherscan", ETHERSCAN_V2: "Etherscan V2", BLOCKSCOUT: "Blockscout", SCENARIO_FIXTURE: "Skenario sintetis" };
   return String(value || "").split(",").map((name) => labels[name.trim()] || friendly(name.trim())).join(" · ");
+}
+function liveScanScope(metadata = {}) {
+  const maxHops = metadata.hop_strategy?.max_hops ?? metadata.max_hops ?? 6;
+  const primary = metadata.source_chain === "BTC" ? "Mempool.space / Blockstream" : metadata.source_chain === "SOLANA" ? "Solscan / Solana RPC" : "Etherscan / Blockscout";
+  const days = metadata.cryptoapis_history_window_days ?? (metadata.source_chain === "SOLANA" ? 1 : 14);
+  const continuation = maxHops > 3 ? `; hop 4–${maxHops}: Crypto APIs (sampel terbaru hingga ${days} hari)` : "";
+  const budget = metadata.requests_made === undefined ? "dibatasi anggaran API" : `${metadata.requests_made} permintaan API${maxHops > 3 ? `, ${metadata.cryptoapis_requests_made ?? 0} ke Crypto APIs` : ""}`;
+  return `${maxHops} hop · hop 1–${Math.min(maxHops, 3)}: ${primary}${continuation} · ${budget}`;
 }
 function isLiveTransfer(record) {
   if (!isLiveRecord(record) || isCandidateEdge(record) || isBridgeEdge(record)) return false;
@@ -344,15 +354,15 @@ function renderCaseSummary() {
   $("#executive-title").textContent = live ? `Aktivitas publik ${available.join(" · ") || "blockchain"}` : dispersals.length ? `${dispersals.length} withdrawal, ${new Set(dispersals.map((row) => chainName(row.chain))).size} jalur blockchain` : "Ikuti alur perkara dan titik tindak lanjut";
   if (live) {
     const activity = graph.live_metadata?.activity || [];
-    $("#executive-narrative").textContent = `Scanner mengamati ${graph.nodes.filter((node) => node.node_zone === "ONCHAIN_WALLET").length} simpul on-chain dan ${graph.edges.filter(isLiveTransfer).length} relasi transaksi publik${activity.length ? `, dari ${activity.length} signature aktivitas` : ""}. Atribusi terhadap dana laporan dan kepemilikan alamat belum terbukti.${available.includes("BTC") ? " Jalur BTC menampilkan kemungkinan output UTXO; change dan pemiliknya belum diketahui." : ""}`;
-    if (graph.live_metadata?.fallback_reason === "SOLSCAN_PLAN_REQUIRED") $("#executive-narrative").textContent = "Solscan menolak akses endpoint karena level paket API. Data berikut berasal dari Solana Mainnet RPC publik. " + $("#executive-narrative").textContent;
+    $("#executive-narrative").textContent = `${scannerLabel(graph.live_metadata?.provider || "Scanner multichain")} mengamati ${graph.nodes.filter((node) => node.node_zone === "ONCHAIN_WALLET").length} simpul on-chain dan ${graph.edges.filter(isLiveTransfer).length} relasi transaksi publik${activity.length ? `, dari ${activity.length} item aktivitas` : ""}; ${liveScanScope(graph.live_metadata)}. Atribusi terhadap dana laporan dan kepemilikan alamat belum terbukti.${available.includes("BTC") ? " Jalur BTC menampilkan kemungkinan output UTXO; change dan pemiliknya belum diketahui." : ""}`;
+    if (graph.live_metadata?.fallback_reason === "SOLSCAN_PLAN_REQUIRED") $("#executive-narrative").textContent = "Solscan menolak akses endpoint karena level paket API. Fase awal memakai Solana Mainnet RPC publik. " + $("#executive-narrative").textContent;
   } else {
     const route = [handoff.victim_pujk_name, handoff.last_fna_pujk_name, pakd].filter((value, index, list) => value && list.indexOf(value) === index).join(" → ");
     const split = dispersals.map((row) => `${chainInfo(row.chain)?.badge || row.chain} ${idr(row.fiat_value_idr)} (${number(row.crypto_amount, 6)} ${row.token_symbol})`).join("; ");
     const withdrawn = dispersals.reduce((sum, row) => sum + Number(row.fiat_value_idr), 0);
     $("#executive-narrative").textContent = `Laporan ${idr(graph.total_scam_idr)} mengikuti jalur ${route || "FNA → PAKD"}.${dispersals.length ? ` Mirror API menemukan withdrawal senilai ${idr(withdrawn)}: ${split}.` : " Pencocokan hanya diteruskan jika bukti PAKD tersedia."} Pilih chain untuk mengikuti jalurnya, lalu tinjau rekomendasi pada titik akhir. Semua data perkara ini sintetis.`;
   }
-  const cards = dispersals.length ? dispersals.map((row) => ({ ...row, canonical: chainName(row.chain) })) : available.map((chain) => ({ chain, canonical: chain, scanner_provider: graph.live_metadata?.scanner_provider || graph.live_metadata?.provider || "Scanner publik" }));
+  const cards = dispersals.length ? dispersals.map((row) => ({ ...row, canonical: chainName(row.chain) })) : available.map((chain) => ({ chain, canonical: chain, scanner_provider: graph.live_metadata?.provider || (live ? "Scanner multichain" : "SCENARIO_FIXTURE") }));
   $("#chain-dispersal-cards").replaceChildren(...cards.map((row) => {
     const chain = row.canonical, info = chainInfo(chain), button = el("button", `chain-card${state.chainFilter === chain ? " active" : ""}`);
     button.type = "button"; button.style.setProperty("--chain-color", info?.color || "#ad93ff"); button.dataset.chain = chain; button.setAttribute("aria-pressed", String(state.chainFilter === chain));
@@ -364,7 +374,7 @@ function renderCaseSummary() {
     button.append(el("strong", "", row.fiat_value_idr !== undefined ? idr(row.fiat_value_idr) : `${graph.nodes.filter((node) => node.node_zone === "ONCHAIN_WALLET" && chainName(node.chain || node.metadata?.chain) === chain).length} simpul publik`));
     button.append(el("span", "chain-card-amount", row.crypto_amount !== undefined ? `${number(row.crypto_amount, 6)} ${row.token_symbol}` : scannerLabel(row.scanner_provider)));
     if (row.crypto_amount !== undefined) button.append(el("span", "chain-card-scanner", `Scanner: ${scannerLabel(row.scanner_provider || "SCENARIO_FIXTURE")}`));
-    button.append(el("small", "", row.initial_wallet_address ? `Awal: ${short(row.initial_wallet_address, 22)}` : "Sampel aktivitas scanner asli"));
+    button.append(el("small", "", row.initial_wallet_address ? `Awal: ${short(row.initial_wallet_address, 22)}` : "Sampel aktivitas terbaru"));
     button.append(el("span", "chain-card-status", row.endpoint_status ? friendly(row.endpoint_status) : "Atribusi belum terbukti"), el("span", "chain-card-cta", `Lihat jalur ${info?.badge || chain} →`));
     button.addEventListener("click", () => setChainFilter(chain, row.initial_node_id));
     return button;
@@ -391,8 +401,8 @@ function renderMetrics() {
   $("#metric-loss-note").textContent = live ? "Alamat / transaksi pada sampel mainnet" : "Nilai laporan korban";
   $("#metric-traced-label").textContent = live ? (graph.live_metadata?.source_chain === "BTC" ? "RELASI UTXO" : "TRANSFER MAINNET") : "DANA TERLACAK";
   $("#metric-traced").textContent = live ? String(graph.edges.filter(isLiveTransfer).length) : idr(graph.total_traced_idr);
-  $("#metric-crypto").textContent = live ? `${graph.live_metadata?.provider || "Explorer publik"} · sampel terbatas` : `${(graph.chain_dispersals || []).length} withdrawal · ${(new Set((graph.chain_dispersals || []).map((row) => row.chain))).size} chain · sintetis`;
-  $("#metric-hops").replaceChildren(document.createTextNode(`${graph.hop_count ?? graph.edges.length} `), el("em", "", "hop"));
+  $("#metric-crypto").textContent = live ? `${scannerLabel(graph.live_metadata?.provider || "Scanner multichain")} · sampel terbatas` : `${(graph.chain_dispersals || []).length} withdrawal · ${(new Set((graph.chain_dispersals || []).map((row) => row.chain))).size} chain · sintetis`;
+  $("#metric-hops").replaceChildren(document.createTextNode(`${(live ? graph.live_metadata?.wallet_hops_traced : undefined) ?? graph.hop_count ?? graph.edges.length} `), el("em", "", "hop"));
   const pct = Number(graph.total_scam_idr) > 0 ? Math.min(100, Number(graph.recoverable_amount_idr) / Number(graph.total_scam_idr) * 100) : 0;
   $("#metric-recovery").textContent = live ? "—" : `${number(pct, 1)}%`;
   $("#metric-recovery-note").textContent = live ? "Tidak dapat disimpulkan dari data publik" : `${idr(graph.recoverable_amount_idr)} · estimasi demo`;

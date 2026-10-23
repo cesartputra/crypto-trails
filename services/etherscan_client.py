@@ -382,7 +382,7 @@ class EtherscanClient:
                                                 "source_explorer_url":explorer_tx_url(chain,tx["hash"]),"destination_explorer_url":explorer_tx_url(destination,landing["hash"]),
                                                 "amount_source":str(tx["amount"]),"amount_destination":str(landing["amount"]),"evidence_source":"TEMPORAL_ADDRESS_CORRELATION", "is_live":False}))
                                         await add_transfer(destination,landing,depth)
-                                        queue.appendleft((destination,address,0))
+                                        queue.appendleft((destination,address,depth+1))
                     if auto_scan_cross_chain:
                         for chain in CHAIN_CONFIG:
                             if CHAIN_CONFIG[chain]["chain_family"] != "EVM" or chain == source_chain or not self.api_key and not CHAIN_CONFIG[chain]["fallback_url"]:continue

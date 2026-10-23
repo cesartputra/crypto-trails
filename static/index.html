@@ -67,8 +67,8 @@
           </section>
           <section id="live-panel" role="tabpanel" aria-labelledby="live-tab" hidden>
             <div class="section-caption">CEK AKTIVITAS WALLET PUBLIK</div>
-            <h3 class="live-title">Scanner sesuai blockchain <span>Bitcoin · Solana · Ethereum / EVM</span></h3>
-            <p class="live-intro">Pilih jaringan dan masukkan alamat publik. Hasil diambil dari scanner asli, berupa sampel terbatas dari aktivitas yang tersedia.</p>
+            <h3 class="live-title">Live Scanner hingga 6 Hop <span>Bitcoin · Solana · Ethereum / EVM</span></h3>
+            <p class="live-intro">Hop 1–3 memakai scanner utama sesuai blockchain; hop 4–6 dilanjutkan melalui Crypto APIs. Fase Crypto APIs mengambil sampel terbaru: Bitcoin / EVM hingga 14 hari, Solana hingga 1 hari. Hasil dibatasi kuota dan aktivitas yang tersedia.</p>
             <form id="live-form" autocomplete="off">
               <label>Blockchain<select id="live-chain" name="source_chain"><option value="BTC">🟠 Bitcoin (BTC)</option><option value="SOLANA">🟣 Solana (SOL)</option><option value="ETHEREUM" selected>🔵 Ethereum (ETH)</option><option value="ARBITRUM">Arbitrum [42161]</option><option value="POLYGON">Polygon [137]</option><option value="BASE">Base [8453]</option><option value="OPTIMISM">Optimism [10]</option><option value="BSC">BNB Smart Chain [56]</option></select></label>
               <label id="live-wallet-label">Alamat wallet publik<input id="live-wallet" name="wallet_address" value="0xf977814e90da44bfa03b6295a0616a897441acec" required maxlength="100" placeholder="Alamat sesuai blockchain…" spellcheck="false" autocapitalize="off"></label>
@@ -77,11 +77,12 @@
               <details id="live-advanced" class="live-advanced"><summary>⚙️ Pengaturan scanner (opsional)</summary>
               <label id="api-key-option">Etherscan API Key (khusus EVM, opsional)<input id="live-api-key" name="etherscan_api_key" type="password" maxlength="256" autocomplete="off" placeholder="Kosongkan untuk Explorer Publik"></label>
               <p id="api-key-note" class="form-note">Opsional — otomatis menggunakan .env atau Explorer Mainnet Publik jika dikosongkan. Key hanya dikirim ke backend lokal untuk permintaan ini.</p>
-<label id="cross-chain-option" class="checkbox-label"><input id="live-cross-chain" name="auto_scan_cross_chain" type="checkbox"><span>✅ Auto-Scan Cross-Chain Bridge ke Jaringan EVM Lain<small>Aktivitas alamat sama dan waktu berdekatan adalah kandidat korelasi, bukan bukti bridge terkonfirmasi.</small></span></label><div class="live-options"><label>Hop Depth<select id="live-hops" name="max_hops"><option value="1">1 Hop</option><option value="2">2 Hops</option><option value="3" selected>3 Hops</option></select></label><label>Filter Aset<select id="live-token" name="token_filter"><option value="ALL">Semua</option><option value="USDT">USDT</option><option value="ETH">Native (ETH / BNB / POL)</option></select></label></div>
+              <p class="form-note">Crypto APIs memakai key dari .env server untuk hop 4–6.</p>
+<label id="cross-chain-option" class="checkbox-label"><input id="live-cross-chain" name="auto_scan_cross_chain" type="checkbox"><span>✅ Auto-Scan Cross-Chain Bridge ke Jaringan EVM Lain<small>Aktivitas alamat sama dan waktu berdekatan adalah kandidat korelasi, bukan bukti bridge terkonfirmasi.</small></span></label><div class="live-options"><label>Hop Depth<select id="live-hops" name="max_hops"><option value="1">1 Hop</option><option value="2">2 Hops</option><option value="3">3 Hops</option><option value="4">4 Hops</option><option value="5">5 Hops</option><option value="6" selected>6 Hops</option></select></label><label>Filter Aset<select id="live-token" name="token_filter"><option value="ALL">Semua</option><option value="USDT">USDT</option><option value="ETH">Native (ETH / BNB / POL)</option></select></label></div>
               <label class="checkbox-label"><input id="live-origin" name="simulate_fna_and_mirror_origin" type="checkbox"><span>Sertakan Hulu FNA Money Trails & PAKD Mirror DB <small>Simulasi hulu, terpisah dari transaksi mainnet asli.</small></span></label>
               </details>
               <button id="live-trace-button" class="button primary live-trace-button" type="submit">🌐 Jalankan Live Scanner</button>
-              <p id="live-status" class="live-status" role="status" aria-live="polite">Koneksi live bergantung pada ketersediaan explorer dan batas permintaan.</p>
+              <p id="live-status" class="live-status" role="status" aria-live="polite">6 hop · scanner utama pada hop 1–3 → Crypto APIs pada hop 4–6; dibatasi kuota layanan.</p>
             </form>
           </section>
         </div>
@@ -97,7 +98,7 @@
         <div class="rail-guide" aria-label="Tiga zona arsitektur">
           <span><i class="blue"></i><b>ZONA 1 · FNA’s Money Trails</b><small>PUJK · snapshot handoff</small></span>
           <span class="innovation-zone"><i class="amber"></i><b>ZONA 2 · PAKD Mirror API</b><small>REST API · scoped data PAKD</small></span>
-          <span><i class="purple"></i><b>ZONA 3 · Multichain & Bridge</b><small>Scanner tiap chain / fixture demo</small></span>
+          <span><i class="purple"></i><b>ZONA 3 · Multichain & Bridge</b><small>Scanner utama → Crypto APIs / fixture demo</small></span>
         </div>
         <div id="graph-board" class="graph-board">
           <div id="graph-scroll" class="graph-scroll">
