@@ -6,8 +6,8 @@
   <meta name="theme-color" content="#f5f4f0">
   <title>Crypto Trails · Intelligence Workspace</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%2325241f'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='2'%3E%3Ccircle cx='12' cy='11' r='4'/%3E%3Ccircle cx='29' cy='15' r='4'/%3E%3Ccircle cx='14' cy='30' r='4'/%3E%3Cpath d='m16 12 9 2M13 15l1 11m4 2 8-10'/%3E%3C/g%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/static/styles.css?v=20261024-3">
-  <script src="/static/app.js?v=20261024-3" defer></script>
+  <link rel="stylesheet" href="/static/styles.css?v=20261024-graph5">
+  <script src="/static/app.js?v=20261024-graph5" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -95,7 +95,7 @@
 
       <div class="workspace">
         <section class="graph-panel panel" aria-labelledby="graph-title">
-          <div class="graph-header"><div><h2 id="graph-title">Alur dana</h2><p>Handoff sumber → wallet perantara → tujuan dana</p></div><div class="graph-header-actions"><button id="fit-button" class="button secondary" type="button" title="Pas-kan seluruh grafik" aria-label="Pas-kan seluruh grafik"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11a9 9 0 1 0 3-6M3 3v6h6"/></svg>Reset</button></div></div>
+          <div class="graph-header"><div><h2 id="graph-title">Alur dana</h2><p>Keterkaitan sumber dana, rekening, PAKD, dan wallet</p></div><div class="graph-header-actions"><button id="fit-button" class="button secondary" type="button" title="Pas-kan seluruh grafik" aria-label="Pas-kan seluruh grafik"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11a9 9 0 1 0 3-6M3 3v6h6"/></svg>Reset</button></div></div>
         <div id="chain-filters" class="chain-filters" role="group" aria-label="Filter jalur blockchain"></div>
 
           <details class="case-context"><summary>Ringkasan kasus & jalur blockchain</summary>
@@ -109,16 +109,18 @@
         </div>
           </details>
         <div id="graph-board" class="graph-board">
+          <div class="network-status" aria-live="polite"><span><strong id="graph-node-count">0</strong> simpul</span><i></i><span><strong id="graph-edge-count">0</strong> relasi</span></div>
           <div id="graph-scroll" class="graph-scroll">
-          <svg id="graph" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 650" role="group" aria-label="Grafik interaktif aliran dana. Pilih simpul untuk memeriksa bukti."><defs><marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#438bf0"/></marker><marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#edb256"/></marker><marker id="arrow-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#57d8ef"/></marker><marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#a48af5"/></marker><clipPath id="web3icon-round" clipPathUnits="objectBoundingBox"><circle cx=".5" cy=".5" r=".5"/></clipPath></defs><g id="viewport"><g id="swimlanes"></g><g id="edges"></g><g id="nodes"></g></g></svg>
+          <svg id="graph" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 650" role="group" aria-label="Grafik interaktif aliran dana. Pilih simpul untuk memeriksa bukti."><defs><marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#438bf0"/></marker><marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#edb256"/></marker><marker id="arrow-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#57d8ef"/></marker><marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#a48af5"/></marker><marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#58b789"/></marker><clipPath id="web3icon-round" clipPathUnits="objectBoundingBox"><circle cx=".5" cy=".5" r=".5"/></clipPath></defs><g id="viewport"><g id="swimlanes"></g><g id="edges"></g><g id="nodes"></g></g></svg>
           </div>
           <div id="graph-loading" class="graph-loading"><div class="loading-orbit"></div><strong>Menyusun jejak aliran dana</strong><span>Mencocokkan handoff FNA dengan Mirror DB dan on-chain…</span></div>
           <div id="graph-empty" class="graph-empty" hidden><strong>Tidak ada simpul pada filter ini</strong><span>Pilih chain atau rentang lain untuk melihat data trace.</span></div>
           <div class="graph-watermark">CRYPTO TRAILS <span>INVESTIGATION WORKSPACE</span></div>
+          <svg id="graph-minimap" class="graph-minimap" viewBox="0 0 132 90" aria-hidden="true" focusable="false"><g id="minimap-content"></g><rect id="minimap-window" x="0" y="0" width="132" height="90" rx="2"/></svg>
           <div class="zoom-controls"><button id="zoom-out" aria-label="Perkecil grafik">−</button><span id="zoom-level">100%</span><button id="zoom-in" aria-label="Perbesar grafik">+</button></div>
           <div id="animation-step" class="animation-step" hidden></div>
         </div>
-        <div class="graph-footer"><div class="legend"><span><i class="blue"></i> FNA / PUJK</span><span><i class="amber"></i> Scoped API PAKD</span><span><i class="purple"></i> Multichain</span><span><i class="green"></i> Disetujui institusi</span></div><button id="animate-button" class="button subtle"><span>▷</span> Animasi aliran dana</button></div>
+        <div class="graph-footer"><div class="legend network-legend" aria-label="Warna menunjukkan jenis entitas"><span><i class="entity-source"></i> Sumber dana</span><span><i class="entity-bank"></i> PUJK / rekening</span><span><i class="entity-pakd"></i> PAKD</span><span><i class="entity-wallet"></i> Wallet / transaksi</span><span><i class="entity-selected"></i> Relasi terpilih</span></div><button id="animate-button" class="button subtle"><span>▷</span> Animasi aliran dana</button></div>
         <div id="warnings" class="warnings" hidden></div>
         </section>
       <aside class="right-panel panel">

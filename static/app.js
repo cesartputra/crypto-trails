@@ -2,7 +2,7 @@
 
 const $ = (selector) => document.querySelector(selector);
 const NS = "http://www.w3.org/2000/svg";
-const state = { scenarios: [], scenarioId: null, graph: null, selected: null, selectedEdge: null, mode: "scenario", positions: new Map(), scale: 1, x: 0, y: 0, animation: 0, request: 0, packets: new Map(), busyRequests: new Set(), selectedRequestId: null, decisionDrafts: new Map(), logs: [], baseWidth: 1160, baseHeight: 650, viewportWidth: 0, chainFilter: "ALL", timeRange: "ALL", viewNodes: [], viewEdges: [], branchByNode: new Map(), lanes: [], currentStep: 3 };
+const state = { scenarios: [], scenarioId: null, graph: null, selected: null, selectedEdge: null, mode: "scenario", positions: new Map(), scale: 1, x: 0, y: 0, animation: 0, request: 0, packets: new Map(), busyRequests: new Set(), selectedRequestId: null, decisionDrafts: new Map(), logs: [], baseWidth: 1160, baseHeight: 650, viewportWidth: 0, viewportHeight: 0, chainFilter: "ALL", timeRange: "ALL", viewNodes: [], viewEdges: [], branchByNode: new Map(), lanes: [], currentStep: 3 };
 const idr = (value) => new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value || 0));
 const number = (value, digits = 2) => new Intl.NumberFormat("id-ID", { maximumFractionDigits: digits }).format(Number(value || 0));
 const short = (value, size = 20) => String(value || "").length > size ? `${String(value).slice(0, size - 2)}…` : String(value || "");
@@ -120,6 +120,10 @@ function beginTrace(live = false) {
   state.selectedRequestId = null;
   $("#nodes").replaceChildren();
   $("#edges").replaceChildren();
+  $("#minimap-content")?.replaceChildren();
+  if ($("#minimap-window")) $("#minimap-window").style.visibility = "hidden";
+  if ($("#graph-node-count")) $("#graph-node-count").textContent = "—";
+  if ($("#graph-edge-count")) $("#graph-edge-count").textContent = "—";
   $("#route-badges").replaceChildren();
   $("#swimlanes").replaceChildren();
   $("#chain-dispersal-cards").replaceChildren();
@@ -505,10 +509,10 @@ function renderRiskAssessment() {
 
 function nodeTheme(node) {
   const type = String(node.node_type || "").toUpperCase();
-  if (node.is_bridge_node || /BRIDGE_PROTOCOL|BRIDGE_CONTRACT/.test(type)) return { color: "#57d8ef", dark: "#12323d", icon: "🌉", marker: "cyan" };
-  if (node.node_zone === "ONCHAIN_WALLET") return { color: chainInfo(node)?.color || "#ad93ff", dark: "#231d3d", icon: type.includes("TRANSACTION") ? "⇢" : type.includes("DEX") ? "⇄" : type.includes("DEPOSIT") ? "▥" : type.includes("BRIDGE") ? "⇆" : "◇", marker: "purple" };
-  if (node.node_zone === "CRYPTO_EXCHANGE_BRIDGE") return { color: "#efb75f", dark: "#342a1c", icon: /MERCHANT|ESCROW/.test(type) ? "↔" : "▥", marker: "amber" };
-  return { color: "#579afa", dark: "#16283f", icon: /VICTIM/.test(type) ? "○" : /MERCHANT/.test(type) ? "↔" : "▣", marker: "blue" };
+  if (/VICTIM|MULE/.test(type)) return { color: "#f1cc65", dark: "#fff3cd", icon: "♙", marker: "blue" };
+  if (node.node_zone === "ONCHAIN_WALLET") return { color: "#53c7d9", dark: "#e0f5f7", icon: /TRANSACTION/.test(type) ? "⇢" : /DEX|BRIDGE/.test(type) ? "⇄" : "◇", marker: "purple" };
+  if (node.node_zone === "CRYPTO_EXCHANGE_BRIDGE") return { color: "#c693cf", dark: "#f3e3f4", icon: /MERCHANT|ESCROW/.test(type) ? "↔" : "▥", marker: "amber" };
+  return { color: "#d795c8", dark: "#f9e4f2", icon: "▥", marker: "blue" };
 }
 
 const zoneLabels = { FIAT_BANK: "Zona 1 · FNA’s Money Trails / PUJK", CRYPTO_EXCHANGE_BRIDGE: "Zona 2 · PAKD Scoped Mirror API", ONCHAIN_WALLET: "Zona 3 · Multichain & Bridge Trails" };
@@ -574,55 +578,83 @@ function graphBranches(graph) {
   return branches;
 }
 
+function networkLayout(nodes, edges) {
+  const ordered = [...nodes].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const adjacency = new Map(ordered.map((node) => [node.id, new Set()]));
+  for (const edge of edges) if (edge.source !== edge.target && adjacency.has(edge.source) && adjacency.has(edge.target)) { adjacency.get(edge.source).add(edge.target); adjacency.get(edge.target).add(edge.source); }
+  const visited = new Set(), components = [];
+  for (const node of ordered) {
+    if (visited.has(node.id)) continue;
+    const ids = [node.id]; visited.add(node.id);
+    for (let index = 0; index < ids.length; index++) for (const next of [...adjacency.get(ids[index])].sort()) if (!visited.has(next)) { visited.add(next); ids.push(next); }
+    ids.sort((a, b) => adjacency.get(b).size - adjacency.get(a).size || (a < b ? -1 : a > b ? 1 : 0));
+    const points = ids.map((id, index) => ({ id, x: Math.cos(index * 2.3999632297) * 115 * Math.sqrt(index), y: Math.sin(index * 2.3999632297) * 115 * Math.sqrt(index) }));
+    const indexById = new Map(ids.map((id, index) => [id, index]));
+    const links = ids.flatMap((id, index) => [...adjacency.get(id)].filter((other) => id < other).sort().map((other) => [index, indexById.get(other)]));
+    for (let iteration = 0; iteration < 100; iteration++) {
+      const forces = points.map((point) => ({ x: -point.x * .002, y: -point.y * .002 }));
+      for (let a = 0; a < points.length; a++) for (let b = a + 1; b < points.length; b++) {
+        const dx = points[b].x - points[a].x, dy = points[b].y - points[a].y, distance = Math.max(1, Math.hypot(dx, dy));
+        const force = 7000 / (distance * distance), fx = dx / distance * force, fy = dy / distance * force;
+        forces[a].x -= fx; forces[a].y -= fy; forces[b].x += fx; forces[b].y += fy;
+      }
+      for (const [a, b] of links) {
+        const dx = points[b].x - points[a].x, dy = points[b].y - points[a].y, distance = Math.max(1, Math.hypot(dx, dy));
+        const force = (distance - 185) * .025, fx = dx / distance * force, fy = dy / distance * force;
+        forces[a].x += fx; forces[a].y += fy; forces[b].x -= fx; forces[b].y -= fy;
+      }
+      const step = 8 * (1 - iteration / 120);
+      points.forEach((point, index) => { const length = Math.max(1, Math.hypot(forces[index].x, forces[index].y)); point.x += forces[index].x / length * Math.min(length, step); point.y += forces[index].y / length * Math.min(length, step); });
+    }
+    for (let pass = 0; pass < 100; pass++) {
+      let overlap = false;
+      for (let a = 0; a < points.length; a++) for (let b = a + 1; b < points.length; b++) {
+        let dx = points[b].x - points[a].x, dy = points[b].y - points[a].y, distance = Math.hypot(dx, dy);
+        if (distance >= 132) continue;
+        if (distance < .01) { dx = 1; dy = 0; distance = 1; }
+        const shift = (132 - distance + .1) / 2, fx = dx / distance * shift, fy = dy / distance * shift;
+        points[a].x -= fx; points[a].y -= fy; points[b].x += fx; points[b].y += fy; overlap = true;
+      }
+      if (!overlap) break;
+    }
+    const minX = Math.min(...points.map((point) => point.x)), minY = Math.min(...points.map((point) => point.y));
+    components.push({ points, minX, minY, width: Math.max(...points.map((point) => point.x)) - minX + 240, height: Math.max(...points.map((point) => point.y)) - minY + 240 });
+  }
+  const positions = new Map(), rowWidth = Math.max(500, Math.sqrt(components.reduce((sum, part) => sum + part.width * part.height, 0)) * 1.35);
+  let x = 20, y = 20, rowHeight = 0, width = 400, height = 300;
+  for (const part of components) {
+    if (x > 20 && x + part.width > rowWidth) { x = 20; y += rowHeight + 50; rowHeight = 0; }
+    for (const point of part.points) positions.set(point.id, { x: x + point.x - part.minX + 120, y: y + point.y - part.minY + 120 });
+    width = Math.max(width, x + part.width + 20); height = Math.max(height, y + part.height + 20);
+    x += part.width + 50; rowHeight = Math.max(rowHeight, part.height);
+  }
+  return { positions, width, height };
+}
+
 function layoutNodes() {
   const view = visibleGraph(); state.viewNodes = view.nodes; state.viewEdges = view.edges;
-  state.viewportWidth = Math.max(300, $("#graph-scroll").clientWidth);
-  const shared = view.nodes.filter((node) => !state.branchByNode.get(node.id));
-  const sharedRanks = [...new Set(shared.map((node) => Number(node.hop) || 0))].sort((a, b) => a - b);
-  const sharedWidth = shared.length ? 255 : 0;
-  const branchNames = caseChains().filter((chain) => (state.chainFilter === "ALL" || state.chainFilter === chain) && view.nodes.some((node) => state.branchByNode.get(node.id) === chain));
-  state.positions.clear(); state.lanes = [];
-  let top = 58, furthest = sharedWidth + 180;
-  for (const chain of branchNames) {
-    const nodes = view.nodes.filter((node) => state.branchByNode.get(node.id) === chain), groups = new Map();
-    for (const node of nodes) { const hop = Number(node.hop) || 0; if (!groups.has(hop)) groups.set(hop, []); groups.get(hop).push(node); }
-    const ranks = [...groups.keys()].sort((a, b) => a - b);
-    const height = Math.max(225, ...[...groups.values()].map((group) => group.length * 110 + 85));
-    state.lanes.push({ chain, top, height });
-    ranks.forEach((rank, column) => groups.get(rank).forEach((node, index, group) => {
-      state.positions.set(node.id, { x: sharedWidth + 110 + column * 230, y: top + height / 2 - 20 + (index - (group.length - 1) / 2) * 110 });
-    }));
-    furthest = Math.max(furthest, sharedWidth + 110 + Math.max(0, ranks.length - 1) * 230 + 115);
-    top += height + 14;
-  }
-  state.baseHeight = Math.max(300, top + 10, shared.length * 100 + 80);
-  const sharedOrder = sharedRanks.flatMap((rank) => shared.filter((node) => (Number(node.hop) || 0) === rank));
-  sharedOrder.forEach((node, index) => state.positions.set(node.id, { x: 120, y: state.baseHeight / 2 - 20 + (index - (sharedOrder.length - 1) / 2) * 100 }));
-  state.baseWidth = Math.max(400, furthest); state.labelLength = 21;
-  const svg = $("#graph"); svg.setAttribute("viewBox", `0 0 ${state.viewportWidth} ${$("#graph-scroll").clientHeight || 500}`); svg.style.height = "100%"; svg.style.width = "100%";
-  const labels = [];
-  if (shared.length) labels.push(svgEl("text", { x: 25, y: 25, class: "swimlane-heading" }, "HANDOFF FNA → PAKD MIRROR API"));
-  for (const lane of state.lanes) {
-    const info = chainInfo(lane.chain);
-    labels.push(svgEl("rect", { x: sharedWidth + 8, y: lane.top, width: state.baseWidth - sharedWidth - 20, height: lane.height, rx: 14, class: "swimlane-bg", fill: info?.color, "fill-opacity": .035, stroke: info?.color, "stroke-opacity": .18 }));
-    if (info?.icon) labels.push(svgEl("image", { href: info.icon, x: sharedWidth + 23, y: lane.top + 9, width: 24, height: 24, class: "chain-lane-icon", "clip-path": "url(#web3icon-round)", "aria-hidden": "true" }));
-    labels.push(svgEl("text", { x: sharedWidth + (info?.icon ? 57 : 25), y: lane.top + 25, class: "swimlane-heading", fill: info?.color }, `${lane.chain} · ${lane.chain === "BTC" ? "Bitcoin Scanner" : lane.chain === "SOLANA" ? "Solana Scanner" : "EVM Scanner"}`));
-  }
-  $("#swimlanes").replaceChildren(...labels);
+  const board = $("#graph-scroll"), height = board.clientHeight || 500;
+  state.viewportWidth = Math.max(300, board.clientWidth); state.viewportHeight = height;
+  const layout = networkLayout(view.nodes, view.edges);
+  const stretch = state.viewportWidth > height ? Math.max(1, Math.min(1.7, (state.viewportWidth / height) / (layout.width / layout.height))) : 1;
+  for (const point of layout.positions.values()) point.x *= stretch;
+  state.positions = layout.positions; state.lanes = [];
+  state.baseWidth = layout.width * stretch; state.baseHeight = layout.height; state.labelLength = 24;
+  const svg = $("#graph"); svg.setAttribute("viewBox", `0 0 ${state.viewportWidth} ${state.viewportHeight}`); svg.style.height = "100%"; svg.style.width = "100%";
+  $("#swimlanes").replaceChildren();
 }
 
 function edgeGeometry(source, target, index = 0, count = 1) {
   const dx = target.x - source.x, dy = target.y - source.y, length = Math.hypot(dx, dy);
   if (length < 1) {
-    const radius = 140 + index * 30;
-    return { path: `M${source.x + 98} ${source.y - 18} C${source.x + radius} ${source.y - radius} ${source.x + radius} ${source.y + radius} ${source.x + 100} ${source.y + 18}`, labelX: source.x + radius, labelY: source.y - 38 - index * 20 };
+    const radius = 76 + Math.min(index, 4) * 14;
+    return { path: `M${source.x + 28} ${source.y - 18} C${source.x + radius} ${source.y - radius} ${source.x + radius} ${source.y + radius} ${source.x + 30} ${source.y + 18}`, labelX: source.x + 74, labelY: source.y - 44 - Math.min(index, 4) * 14 };
   }
   const ux = dx / length, uy = dy / length;
-  const sourceOffset = Math.min(100 / Math.abs(ux), 38 / Math.abs(uy));
-  const targetOffset = Math.min(104 / Math.abs(ux), 42 / Math.abs(uy));
+  const sourceOffset = 36, targetOffset = 41;
   const sx = source.x + ux * sourceOffset, sy = source.y + uy * sourceOffset;
   const tx = target.x - ux * targetOffset, ty = target.y - uy * targetOffset;
-  const offset = count > 1 ? (index - (count - 1) / 2) * 56 : 0;
+  const offset = count > 1 ? (index - (count - 1) / 2) / Math.max(1, count - 1) * 110 : 0;
   const bendX = -dy / length * offset, bendY = dx / length * offset;
   if (Math.abs(dx) < 20) return {
     path: `M${sx} ${sy} C${sx + 50 + bendX} ${sy + dy * .3 + bendY} ${tx + 50 + bendX} ${ty - dy * .3 + bendY} ${tx} ${ty}`,
@@ -634,16 +666,25 @@ function edgeGeometry(source, target, index = 0, count = 1) {
   };
 }
 
+function parallelEdgeSlots(edges) {
+  const groups = new Map(), slots = new Map();
+  for (const edge of edges) {
+    const key = JSON.stringify([edge.source, edge.target].sort());
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(edge);
+  }
+  for (const siblings of groups.values()) {
+    siblings.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+    siblings.forEach((edge, index) => slots.set(edge.id, { index: edge.source > edge.target ? siblings.length - 1 - index : index, count: siblings.length }));
+  }
+  return slots;
+}
+
 function renderGraph() {
   if (!state.graph) return;
   layoutNodes();
   if ($("#graph-empty")) $("#graph-empty").hidden = state.viewNodes.length > 0;
-  const parallelEdges = new Map();
-  for (const edge of state.viewEdges) {
-    const key = JSON.stringify([edge.source, edge.target]);
-    if (!parallelEdges.has(key)) parallelEdges.set(key, []);
-    parallelEdges.get(key).push(edge.id);
-  }
+  const slots = parallelEdgeSlots(state.viewEdges);
   const edgeElements = state.viewEdges.map((edge) => {
     const source = state.positions.get(edge.source), target = state.positions.get(edge.target);
     if (!source || !target) return null;
@@ -652,10 +693,10 @@ function renderGraph() {
     const escrow = /ESCROW|SETTLEMENT/.test(edge.edge_type || "");
     const crossChain = isBridgeEdge(edge);
     const candidate = isCandidateEdge(edge);
-    const theme = crossChain ? {color:"#258e95",marker:"cyan"} : {color:"#ee6848",marker:"amber"};
-    const group = svgEl("g", { class: `edge-group${crossChain ? " cross-chain-edge" : ""}${candidate ? " bridge-candidate" : ""}${state.selectedEdge === edge.id ? " selected" : ""}`, "data-edge-id": edge.id, "data-source": edge.source, "data-target": edge.target, tabindex: 0, role: "button", "aria-label": `Inspeksi transaksi ${edge.label || edge.asset || edge.id}`, "aria-pressed": String(state.selectedEdge === edge.id) });
-    const siblings = parallelEdges.get(JSON.stringify([edge.source, edge.target]));
-    const { path, labelX, labelY } = edgeGeometry(source, target, siblings.indexOf(edge.id), siblings.length);
+    const theme = crossChain ? {color:"#589fa9",marker:"cyan"} : {color:"#a7b1b8",marker:"amber"};
+    const group = svgEl("g", { class: `edge-group${crossChain ? " cross-chain-edge" : ""}${candidate ? " bridge-candidate" : ""}${state.selectedEdge === edge.id ? " selected" : ""}`, "data-edge-id": edge.id, "data-source": edge.source, "data-target": edge.target, "data-marker": theme.marker, tabindex: 0, role: "button", "aria-label": `Inspeksi transaksi ${edge.label || edge.asset || edge.id}`, "aria-pressed": String(state.selectedEdge === edge.id) });
+    const slot = slots.get(edge.id);
+    const { path, labelX, labelY } = edgeGeometry(source, target, slot.index, slot.count);
     const line = svgEl("path", { class: `graph-edge${crossChain ? " bridge-path" : ""}${escrow ? " escrow" : ""}`, d: path, stroke: theme.color, "marker-end": `url(#arrow-${theme.marker})` });
     const label = crossChain ? `${candidate ? "KANDIDAT" : "BRIDGE"}: ${chainInfo(edge.bridged_from_chain)?.badge || chainInfo(fromNode)?.badge || "?"} → ${chainInfo(edge.bridged_to_chain)?.badge || chainInfo(toNode)?.badge || "?"}` : edge.crypto_amount != null && Number(edge.crypto_amount) > 0 ? `${number(edge.crypto_amount, 4)} ${edge.asset || "USDT"}` : Number(edge.amount_idr) > 0 ? compactIdr(edge.amount_idr) : short(edge.label || friendly(edge.edge_type), 20);
     const text = svgEl("text", { class: `edge-label${escrow ? " escrow" : ""}`, x: labelX, y: labelY }, label);
@@ -674,27 +715,29 @@ function renderGraph() {
     const initial = /INITIAL/i.test(node.node_type || "") || node.metadata?.is_initial_wallet;
     const decision = decisionForNode(node);
     const decisionTheme = decisionStyle(decision);
-    const lock = decision && Number(decision.approved_frozen_amount_idr) > 0;
     const group = svgEl("g", { class: `node${selected ? " selected" : ""}`, transform: `translate(${x} ${y})`, "data-node-id": node.id, tabindex: 0, role: "button", "aria-label": `${node.label}. ${friendly(node.node_type)}. Tampilkan detail.`, "aria-pressed": String(selected) });
-    group.append(svgEl("rect", { class: "node-card", x: -96, y: -33, width: 192, height: 66, rx: 10 }));
-    group.append(svgEl("rect", { class: "node-icon-bg", x: -85, y: -20, width: 34, height: 34, rx: 8 }));
-    group.append(svgEl("rect", { class: "node-card-accent", x: 86, y: -22, width: 4, height: 44, rx: 2, fill: lock ? decisionTheme.color : theme.color }));
+    group.append(svgEl("circle", { class: "node-orbit", r: initial ? 36 : 33, fill: "none", stroke: theme.color }));
+    group.append(svgEl("circle", { class: "node-core", r: initial ? 29 : 27, fill: theme.color, stroke: theme.color }));
     if (node.node_zone === "ONCHAIN_WALLET" && chain?.icon) {
-      group.append(svgEl("image", { href: chain.icon, x: -80, y: -15, width: 24, height: 24, class: "node-chain-icon", "clip-path": "url(#web3icon-round)", "aria-hidden": "true" }));
+      group.append(svgEl("image", { href: chain.icon, x: -13, y: -13, width: 26, height: 26, class: "network-node-icon", "clip-path": "url(#web3icon-round)", "aria-hidden": "true" }));
     } else {
-      group.append(svgEl("text", { class: "node-icon", x: -68, y: -1, fill: theme.color }, theme.icon));
+      group.append(svgEl("text", { class: "network-node-icon", x: 0, y: 1 }, theme.icon));
     }
-    group.append(svgEl("text", { class: "node-card-title", x: -40, y: -11 }, short(node.label, 19)));
-    const subtitle = node.asset && Number(node.crypto_amount) > 0 ? `${number(node.crypto_amount, 5)} ${node.asset}` : Number(node.amount_idr) > 0 ? compactIdr(node.amount_idr) : node.account ? short(node.account, 20) : node.address ? short(node.address, 20) : short(node.entity_label || friendly(node.node_type), 20);
-    group.append(svgEl("text", { class: "node-card-subtitle", x: -40, y: 7 }, short(subtitle, 22)));
+    group.append(svgEl("text", { class: "network-node-label", x: 0, y: 49 }, short(node.label, 18)));
+    const subtitle = node.address ? short(node.address, 19) : node.account ? short(node.account, 19) : node.asset && Number(node.crypto_amount) > 0 ? `${number(node.crypto_amount, 5)} ${node.asset}` : Number(node.amount_idr) > 0 ? compactIdr(node.amount_idr) : short(node.entity_label || friendly(node.node_type), 21);
+    group.append(svgEl("text", { class: "network-node-subtitle", x: 0, y: 64 }, subtitle));
     const status = decision ? decisionTheme.short : initial ? `Wallet awal${chain ? ` · ${chain.badge}` : ""}` : isLiveRecord(node) ? `${chain?.badge || "Mainnet"} · belum teratribusi` : "Bukti sintetis";
-    group.append(svgEl("text", { class: "node-card-status", x: -40, y: 23 }, short(status, 27)));
+    group.append(svgEl("text", { class: "network-node-status", x: 0, y: 78 }, short(status, 28)));
     group.append(svgEl("title", {}, `${node.label}\n${node.address || node.account || node.entity_label || ""}`));
     group.addEventListener("click", (event) => { if (!dragState.moved) { event.stopPropagation(); selectNode(node.id); } });
     group.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(node.id); } });
     return group;
   }));
+  renderMinimap();
   updateTransform();
+  highlightGraphSelection();
+  if ($("#graph-node-count")) $("#graph-node-count").textContent = String(state.viewNodes.length);
+  if ($("#graph-edge-count")) $("#graph-edge-count").textContent = String(state.viewEdges.length);
   renderTransactions();
 }
 
@@ -703,9 +746,37 @@ function compactIdr(value) {
   return amount >= 1e9 ? `Rp ${number(amount / 1e9, 1)} M` : amount >= 1e6 ? `Rp ${number(amount / 1e6, 1)} jt` : idr(amount);
 }
 
+function renderMinimap() {
+  const svg = $("#graph-minimap"), content = $("#minimap-content");
+  if (!svg || !content) return;
+  svg.setAttribute("viewBox", `0 0 ${state.baseWidth} ${state.baseHeight}`);
+  const edges = state.viewEdges.map((edge) => {
+    const source = state.positions.get(edge.source), target = state.positions.get(edge.target);
+    return source && target ? svgEl("line", { x1: source.x, y1: source.y, x2: target.x, y2: target.y, class: "minimap-edge" }) : null;
+  }).filter(Boolean);
+  const nodes = state.viewNodes.map((node) => { const point = state.positions.get(node.id); return svgEl("circle", { cx: point.x, cy: point.y, r: 17, fill: nodeTheme(node).color, class: "minimap-node" }); });
+  content.replaceChildren(...edges, ...nodes);
+}
+
+function highlightGraphSelection() {
+  for (const group of document.querySelectorAll(".edge-group")) {
+    const related = group.dataset.edgeId === state.selectedEdge || Boolean(state.selected && [group.dataset.source, group.dataset.target].includes(state.selected));
+    group.classList.toggle("related", related);
+    group.querySelector(".graph-edge")?.setAttribute("marker-end", `url(#arrow-${related ? "green" : group.dataset.marker || "amber"})`);
+  }
+}
+
 function updateTransform() {
   $("#viewport").setAttribute("transform", `translate(${state.x} ${state.y}) scale(${state.scale})`);
   $("#zoom-level").textContent = `${Math.round(state.scale * 100)}%`;
+  const windowRect = $("#minimap-window"), board = $("#graph-scroll");
+  if (windowRect && board && state.scale > 0) {
+    const left = Math.max(0, Math.min(state.baseWidth, -state.x / state.scale)), top = Math.max(0, Math.min(state.baseHeight, -state.y / state.scale));
+    const right = Math.max(0, Math.min(state.baseWidth, (board.clientWidth - state.x) / state.scale)), bottom = Math.max(0, Math.min(state.baseHeight, (board.clientHeight - state.y) / state.scale));
+    windowRect.setAttribute("x", left); windowRect.setAttribute("y", top);
+    windowRect.setAttribute("width", Math.max(0, right - left)); windowRect.setAttribute("height", Math.max(0, bottom - top));
+    windowRect.style.visibility = right > left && bottom > top ? "visible" : "hidden";
+  }
 }
 
 function resetView() {
@@ -742,6 +813,7 @@ function selectNode(id) {
   }
   const nodeRequests = (state.graph?.governance_requests || []).filter((request) => request.target_node_id === id);
   if (!nodeRequests.some((request) => request.request_id === state.selectedRequestId)) state.selectedRequestId = nodeRequests[0]?.request_id || null;
+  highlightGraphSelection();
   renderInspector();
   renderEvidence();
   renderPakd();
@@ -754,6 +826,7 @@ function selectEdge(id) {
   state.selectedRequestId = null;
   for (const group of document.querySelectorAll(".node")) { group.classList.remove("selected"); group.setAttribute("aria-pressed", "false"); }
   for (const group of document.querySelectorAll(".edge-group")) { const selected = group.dataset.edgeId === id; group.classList.toggle("selected", selected); group.setAttribute("aria-pressed", String(selected)); }
+  highlightGraphSelection();
   renderInspector(); renderActions();
 }
 
@@ -1305,7 +1378,7 @@ let graphResizeTimer;
 new ResizeObserver(() => {
   clearTimeout(graphResizeTimer);
   graphResizeTimer = setTimeout(() => {
-    if (!state.graph || Math.abs($("#graph-scroll").clientWidth - state.viewportWidth) < 2) return;
+    if (!state.graph || Math.abs(Math.max(300, $("#graph-scroll").clientWidth) - state.viewportWidth) < 2 && Math.abs(($("#graph-scroll").clientHeight || 500) - state.viewportHeight) < 2) return;
     stopAnimation();
     renderGraph();
     resetView();

@@ -30,16 +30,20 @@ const edge = (source, target) => ({ id: `${source}:${target}`, source, target })
 state.graph.edges.push(edge('victim', 'va'), edge('va', 'deposit'), edge('deposit', 'conversion'), edge('conversion', 'user'), ...['BTC', 'SOLANA', 'ETHEREUM'].flatMap((chain) => [edge('user', `${chain}-initial`), edge(`${chain}-initial`, `${chain}-hop`)]), edge('SOLANA-hop', 'sol-bank'));
 const original = JSON.stringify(state.graph);
 context.layoutNodes();
-assert.equal(state.lanes.length, 3);
+assert.equal(state.positions.size, state.viewNodes.length);
+for (const point of state.positions.values()) {
+  assert.ok(Number.isFinite(point.x) && Number.isFinite(point.y));
+  assert.ok(point.x > 0 && point.x < state.baseWidth && point.y > 0 && point.y < state.baseHeight);
+}
 assert.equal(state.viewNodes.some((n) => n.id === 'deposit'), false);
 assert.ok(state.viewEdges.some((e) => e.source === 'va' && e.target === 'user' && e.metadata.collapsed_api_steps.length === 3));
 assert.equal(state.branchByNode.get('sol-bank'), 'SOLANA');
-const laneY = ['BTC', 'SOLANA', 'ETHEREUM'].map((chain) => state.positions.get(`${chain}-initial`).y);
-assert.ok(laneY[1] - laneY[0] >= 200 && laneY[2] - laneY[1] >= 200);
-assert.equal(state.positions.get('BTC-initial').x, state.positions.get('SOLANA-initial').x);
-assert.ok(state.positions.get('BTC-hop').x > state.positions.get('BTC-initial').x);
+for (const chain of ['BTC', 'SOLANA', 'ETHEREUM']) {
+  const initial = state.positions.get(`${chain}-initial`), next = state.positions.get(`${chain}-hop`);
+  assert.ok(Math.hypot(initial.x - next.x, initial.y - next.y) >= 100);
+}
 state.chainFilter = 'SOLANA'; context.layoutNodes();
-assert.equal(state.lanes.length, 1);
+assert.equal(state.positions.size, state.viewNodes.length);
 assert.ok(state.viewNodes.some((n) => n.id === 'victim'));
 assert.ok(state.viewNodes.some((n) => n.id === 'sol-bank'));
 assert.equal(state.viewNodes.some((n) => n.chain === 'BTC' || n.chain === 'ETHEREUM'), false);
@@ -152,8 +156,15 @@ async function checkLiveRequests() {
   assert.match(context.$('#warnings').textContent, /Hasil parsial.*3 dari 6 hop/);
   assert.match(context.$('#warnings').textContent, /Transaksi publik belum membuktikan atribusi/);
   assert.doesNotMatch(context.$('#warnings').textContent, /Penelusuran gagal/);
+  context.$('#minimap-content').append({ stale: true });
+  context.$('#graph-node-count').textContent = '99';
+  context.$('#graph-edge-count').textContent = '99';
   failure = true;
   await context.traceLive();
+  assert.equal(context.$('#minimap-content').children.length, 0);
+  assert.equal(context.$('#minimap-window').style.visibility, 'hidden');
+  assert.equal(context.$('#graph-node-count').textContent, '—');
+  assert.equal(context.$('#graph-edge-count').textContent, '—');
   assert.equal(state.graph, null, 'Failed live requests must clear previous evidence');
   assert.equal(context.$('#nodes').children.length, 0);
   assert.match(context.$('#warnings').textContent, /Tidak ada transaksi demo/);
