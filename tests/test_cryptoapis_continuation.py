@@ -114,19 +114,22 @@ def test_all_eight_chains_use_documented_paths_and_history(chain, slug, unit, ad
     if chain == 'SOLANA': assert all('sortingOrder' not in req.url.params for req in calls)
 
 
-def test_canonical_tokens_use_display_decimals_reject_spoof_symbols_and_wrong_decimals():
+@pytest.mark.parametrize('options,expected', [({}, 1), ({'contract': EVM[8]}, 0), ({'decimals': 18}, 0)])
+def test_canonical_tokens_use_display_decimals_reject_spoof_symbols_and_wrong_decimals(options, expected):
     def handle(req):
         if req.url.path.endswith('/balance'): return httpx.Response(200, json=balance())
-        rows = [token(EVM[3], EVM[4]), token(EVM[3], EVM[5], contract=EVM[8]), token(EVM[3], EVM[6], decimals=18, tx='c')]
+        rows = [token(EVM[3], EVM[4], **options)]
         return httpx.Response(200, json=response_rows(rows))
     result, calls = extend(graph(), handle, max_hops=4, token_filter='USDC')
-    assert len(result['edges']) == 1 and result['edges'][0].asset == 'USDC'
-    assert result['edges'][0].crypto_amount == D('123.456789')
+    assert len(result['edges']) == expected
+    if expected:
+        assert result['edges'][0].asset == 'USDC' and result['edges'][0].crypto_amount == D('123.456789')
+    else:
+        assert any('tidak valid' in w or 'kanonis' in w for w in result['warnings'])
     assert not any(req.url.path.endswith('/transactions') for req in calls)
-    assert any('tidak valid' in w or 'kanonis' in w for w in result['warnings'])
 
 
-@pytest.mark.parametrize('status,expected', [(401,'autentikasi'),(402,'kredit'),(403,'akses'),(429,'kuota'),(302,'redirect'),(500,'HTTP 500')])
+@pytest.mark.parametrize('status,expected', [(401,'autentikasi'),(302,'redirect'),(500,'HTTP 500')])
 def test_http_errors_are_sanitized_and_never_fallback(status, expected):
     def handle(req): return httpx.Response(status, text='fixture-key secret-body https://evil.example', headers={'Location': 'https://evil.example'})
     with pytest.raises(CryptoAPIsAPIError) as failure:
@@ -231,7 +234,9 @@ def test_invalid_bitcoin_totals_or_fractional_satoshis_create_no_evidence(output
     assert any('tidak valid' in warning for warning in result['warnings'])
 
 
-def test_bitcoin_change_reuse_follows_new_outpoint_without_refetching_address():
+def test_bitcoin_change_reuse_follows_new_outpoint_without_refetching_address(monkeypatch):
+    # Exercise outpoint ordering independently of the one-record Free sample policy.
+    monkeypatch.setattr(CryptoAPIsContinuation, 'PAGE_SIZE', 2)
     original = graph('BTC', BTC[0])
     original['edges'] = [TrailEdge(id='prior-output', source='prior-tx', target='legacy-frontier',
         edge_type='BITCOIN_TRANSACTION_OUTPUT', label='prior', chain='BTC', tx_hash='1'*64,
@@ -252,3 +257,138 @@ def test_bitcoin_change_reuse_follows_new_outpoint_without_refetching_address():
     assert any(edge.tx_hash == 'b'*64 for edge in result['edges'])
     assert next(node for node in result['nodes'] if node.address == BTC[2]).metadata['wallet_hop'] == 5
     assert len([req for req in calls if BTC[0] in req.url.path]) == 1
+
+
+def test_free_mode_fetches_one_record_per_category_without_balance_requests():
+    def handle(req):
+        return httpx.Response(200, json=balance() if req.url.path.endswith('/balance') else response_rows([]))
+    result, calls = extend(graph(), handle, max_hops=4)
+    assert all(not req.url.path.endswith('/balance') for req in calls)
+    assert all(req.url.params['limit'] == '1' for req in calls)
+    assert result['metadata']['cryptoapis_mode'] == 'FREE'
+    assert result['metadata']['cryptoapis_credit_limit'] == 2000
+    assert result['metadata']['cryptoapis_request_limit'] == 6
+
+
+def test_rate_limit_retries_once_and_keeps_primary_graph_with_actual_credit_headers():
+    original = graph()
+    def handle(req):
+        return httpx.Response(429, json={'error': {'code': 'request_limit_reached', 'message': 'fixture-key'}},
+            headers={'Retry-After': '0', 'x-credits-consumed': '100', 'x-credits-available': '89000'})
+    result, calls = extend(original, handle, max_hops=4)
+    assert result is original and result['nodes'][0].id == 'legacy-frontier'
+    assert not result['edges'] and len(calls) == 2
+    metadata = result['metadata']
+    assert metadata['partial'] and metadata['continuation_status'] == 'RATE_LIMIT'
+    assert metadata['cryptoapis_credits_consumed'] == 200 and metadata['cryptoapis_credits_available'] == 89000
+    assert metadata['cryptoapis_http_status'] == 429
+    assert metadata['provider'] == 'LEGACY'
+    assert 'fixture-key' not in repr(metadata) and 'fixture-key' not in repr(result['warnings'])
+
+
+def test_success_after_one_429_counts_both_attempts_and_credits():
+    attempts = []
+    def handle(req):
+        attempts.append(req)
+        if len(attempts) == 1:
+            return httpx.Response(429, headers={'Retry-After': '0', 'x-credits-consumed': '100'})
+        return httpx.Response(200, json=response_rows([native(EVM[3], EVM[4])]),
+            headers={'x-credits-consumed': '142', 'x-credits-available': '88758'})
+    result, calls = extend(graph(), handle, max_hops=4, token_filter='ETH')
+    assert len(calls) == 2 and len(result['edges']) == 1
+    assert result['metadata']['cryptoapis_credits_consumed'] == 242
+    assert result['metadata']['cryptoapis_requests_made'] == 2
+    assert not result['metadata'].get('partial', False)
+
+
+@pytest.mark.parametrize('status,reason', [(402, 'CREDIT_LIMIT'), (403, 'ACCESS_LIMIT')])
+def test_credit_or_plan_limit_returns_partial_without_retries(status, reason):
+    result, calls = extend(graph(), lambda req: httpx.Response(status, headers={
+        'x-credits-consumed': '100', 'x-credits-available': '0'}), max_hops=4)
+    assert len(calls) == 1 and len(result['nodes']) == 1
+    assert result['metadata']['partial'] and result['metadata']['continuation_status'] == reason
+    assert result['metadata']['cryptoapis_http_status'] == status
+
+
+def test_insufficient_remaining_credits_prevents_next_request_but_keeps_observed_transfer():
+    def handle(req):
+        return httpx.Response(200, json=response_rows([native(EVM[3], EVM[4])]),
+            headers={'x-credits-consumed': '142', 'x-credits-available': '50'})
+    result, calls = extend(graph(), handle, max_hops=6)
+    assert len(calls) == 1 and len(result['edges']) == 1
+    assert result['metadata']['continuation_status'] == 'CREDIT_LIMIT'
+    assert result['metadata']['cryptoapis_credits_available'] == 50
+
+
+def test_credit_budget_stops_before_request_whose_estimate_would_exceed_it(monkeypatch):
+    monkeypatch.setattr(CryptoAPIsContinuation, 'MAX_CREDITS_PER_SCAN', 400, raising=False)
+    def handle(req):
+        return httpx.Response(200, json=response_rows([native(EVM[3], EVM[4])]),
+            headers={'x-credits-consumed': '350', 'x-credits-available': '89000'})
+    result, calls = extend(graph(), handle, max_hops=6)
+    assert len(calls) == 1 and len(result['edges']) == 1
+    assert result['metadata']['partial'] and result['metadata']['continuation_status'] == 'BUDGET_LIMIT'
+
+
+def test_invalid_credit_headers_use_conservative_estimate_without_leaking_values():
+    def handle(req):
+        return httpx.Response(200, json=response_rows([]), headers={
+            'x-credits-consumed': 'NaN', 'x-credits-available': 'fixture-key'})
+    result, calls = extend(graph(), handle, max_hops=4, token_filter='ETH')
+    assert len(calls) == 1
+    assert result['metadata']['cryptoapis_credits_consumed'] == 0
+    assert result['metadata']['cryptoapis_credits_estimated'] == 142
+    assert 'fixture-key' not in repr(result['metadata'])
+
+
+def test_retry_after_longer_than_deadline_is_reported_without_retrying(monkeypatch):
+    cooldowns = []
+    monkeypatch.setattr(module, 'defer_requests', cooldowns.append)
+    result, calls = extend(graph(), lambda req: httpx.Response(429, headers={
+        'Retry-After': '172800', 'x-credits-consumed': '100'}), max_hops=4)
+    assert len(calls) == 1 and cooldowns == [172800]
+    assert result['metadata']['retry_after_seconds'] == 172800
+    assert result['metadata']['continuation_status'] == 'RATE_LIMIT'
+
+
+def test_rate_limit_at_last_attempt_keeps_http_cause_instead_of_generic_budget(monkeypatch):
+    monkeypatch.setattr(CryptoAPIsContinuation, 'MAX_REQUESTS_EVM', 1)
+    result, calls = extend(graph(), lambda req: httpx.Response(429, headers={'x-credits-consumed': '100'}), max_hops=4)
+    assert len(calls) == 1 and result['metadata']['continuation_status'] == 'RATE_LIMIT'
+    assert result['metadata']['cryptoapis_http_status'] == 429
+
+
+@pytest.mark.parametrize('error_type', [httpx.ConnectError, httpx.ReadTimeout])
+def test_network_failure_before_headers_keeps_estimated_credit_charge(error_type):
+    original = graph()
+    def handle(request):
+        raise error_type('private-upstream-secret', request=request)
+    with pytest.raises(CryptoAPIsAPIError) as error:
+        extend(original, handle, max_hops=4, token_filter='ETH')
+    assert 'private-upstream-secret' not in str(error.value)
+    assert original['metadata']['requests_made'] == 8
+    assert original['metadata']['cryptoapis_requests_made'] == 1
+    assert original['metadata']['cryptoapis_credits_consumed'] == 0
+    assert original['metadata']['cryptoapis_credits_estimated'] == 142
+
+
+def test_cancellation_before_headers_keeps_estimated_credit_charge():
+    original = graph()
+
+    async def run():
+        entered = asyncio.Event()
+        async def handle(request):
+            entered.set()
+            await asyncio.Event().wait()
+        engine = CryptoAPIsContinuation(transport=httpx.MockTransport(handle), pakd_consumer=Consumer())
+        task = asyncio.create_task(engine.extend(original, source_chain='ETHEREUM', max_hops=4, token_filter='ETH'))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    assert original['metadata']['requests_made'] == 8
+    assert original['metadata']['cryptoapis_requests_made'] == 1
+    assert original['metadata']['cryptoapis_credits_consumed'] == 0
+    assert original['metadata']['cryptoapis_credits_estimated'] == 142

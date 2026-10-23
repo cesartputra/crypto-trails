@@ -88,7 +88,8 @@ class MultichainScanner:
             result = await CryptoAPIsContinuation(transport=self.transport, pakd_consumer=self.pakd_consumer).extend(
                 result, source_chain=chain, max_hops=max_hops, token_filter=token_filter,
                 direction=direction, auto_scan_cross_chain=auto_scan_cross_chain)
-            metadata['continuation_status'] = 'TRUNCATED' if metadata.get('truncated') else 'COMPLETE_SAMPLE'
+            if not metadata.get('partial'):
+                metadata['continuation_status'] = 'TRUNCATED' if metadata.get('truncated') else 'COMPLETE_SAMPLE'
         metadata['wallet_hops_traced'] = max((n.metadata.get('wallet_hop', 0) for n in result['nodes']), default=0)
         return result
 
@@ -109,10 +110,16 @@ class MultichainScanner:
             from services.cryptoapis_continuation import CryptoAPIsContinuation
             result = {'nodes': [n.model_copy(deep=True) for n in graph.nodes],
                 'edges': [e.model_copy(deep=True) for e in graph.edges], 'warnings': [], 'metadata': dict(graph.live_metadata)}
-            result = await CryptoAPIsContinuation(transport=self.transport, pakd_consumer=self.pakd_consumer).extend(
-                result, chain, max_hops=depth + 1, start_hop=depth, frontier_ids={source.id},
-                token_filter=graph.live_metadata.get('token_filter', 'ALL'))
-            result['metadata']['expansion_requests_made'] = result['metadata']['requests_made'] - graph.live_metadata.get('requests_made', 0)
+            previous_requests = graph.live_metadata.get('requests_made', 0)
+            try:
+                result = await CryptoAPIsContinuation(transport=self.transport, pakd_consumer=self.pakd_consumer).extend(
+                    result, chain, max_hops=depth + 1, start_hop=depth, frontier_ids={source.id},
+                    token_filter=graph.live_metadata.get('token_filter', 'ALL'))
+            finally:
+                # Failed or cancelled calls still spend the stored trace's budget.
+                graph.live_metadata.update({key: value for key, value in result['metadata'].items()
+                    if key.startswith('cryptoapis_') or key == 'requests_made'})
+            result['metadata']['expansion_requests_made'] = result['metadata']['requests_made'] - previous_requests
             old_nodes, old_edges = {n.id for n in graph.nodes}, {e.id for e in graph.edges}
             result['nodes'] = [n for n in result['nodes'] if n.id == source.id or n.id not in old_nodes]
             result['edges'] = [e for e in result['edges'] if e.id not in old_edges]

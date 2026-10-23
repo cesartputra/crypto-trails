@@ -9,8 +9,9 @@ WALLETS = ['0x' + f'{index:040x}' for index in range(1, 9)]
 
 
 @pytest.fixture
-def hybrid_transport(monkeypatch, tmp_path):
+def hybrid_transport(monkeypatch, tmp_path, request):
     calls = []
+    crypto_status = getattr(request, 'param', 200)
     monkeypatch.setattr(cryptoapis_config, 'ENV_FILE', tmp_path / '.env')
     monkeypatch.setenv('CRYPTOAPIS_API_KEY', 'crypto-fixture-key')
     monkeypatch.setattr(etherscan_client, '_config', lambda: {'ETHERSCAN_API_KEY': 'etherscan-fixture-key',
@@ -31,6 +32,9 @@ def hybrid_transport(monkeypatch, tmp_path):
                 'value': '1000000000000000000', 'timeStamp': '1700000000', 'isError': '0', 'txreceipt_status': '1'}]
             return httpx.Response(200, json={'status': '1', 'result': result})
         assert request.url.host == 'rest.cryptoapis.io'
+        if crypto_status != 200:
+            return httpx.Response(crypto_status, headers={'x-credits-consumed': '100',
+                'x-credits-available': '0' if crypto_status == 402 else '89000', 'Retry-After': '0'})
         address, category = request.url.path.split('/')[-2:]
         index = WALLETS.index(address)
         assert 3 <= index < 6, 'Continuation restarted at seed or passed sixth hop'
@@ -55,7 +59,7 @@ def test_api_merges_primary_three_then_cryptoapis_without_restarting(client, hyb
     assert [edge['scanner_provider'] for edge in graph['edges']] == ['ETHERSCAN'] * 3 + ['CRYPTOAPIS'] * (depth - 3)
     assert graph['live_metadata']['max_hops'] == depth
     assert graph['live_metadata']['requests_made'] == len(hybrid_transport)
-    assert graph['live_metadata']['cryptoapis_requests_made'] == 2 * (depth - 3)
+    assert graph['live_metadata']['cryptoapis_requests_made'] == depth - 3
     assert graph['live_metadata']['provider'] == 'ETHERSCAN, CRYPTOAPIS'
     assert all(edge['source'] in {n['id'] for n in graph['nodes']} and edge['target'] in {n['id'] for n in graph['nodes']} for edge in graph['edges'])
     assert all(node['taint_score_pct'] is None for node in graph['nodes'])
@@ -103,3 +107,65 @@ def test_manual_expansion_cannot_pass_sixth_wallet_hop(client, hybrid_transport)
     response = client.get(f'/api/v1/trail/address/{WALLETS[6]}/expand', params={
         'trace_id': graph['trace_id'], 'chain': 'ETHEREUM', 'live': 'true'})
     assert response.status_code == 422 and len(hybrid_transport) == before
+
+
+@pytest.mark.parametrize('hybrid_transport', [429, 402, 403], indirect=True)
+def test_quota_failure_returns_primary_real_graph_with_explicit_partial_status(client, hybrid_transport):
+    response = client.post('/api/v1/trail/live-scanner', json={'wallet_address': WALLETS[0], 'token_filter': 'ETH'})
+    assert response.status_code == 200, response.text
+    graph = response.json()
+    metadata = graph['live_metadata']
+    assert metadata['partial'] and metadata['continuation_status'] in {'RATE_LIMIT', 'CREDIT_LIMIT', 'ACCESS_LIMIT'}
+    assert metadata['cryptoapis_http_status'] in {429, 402, 403}
+    assert metadata['wallet_hops_traced'] == 3 and metadata['provider'] == 'ETHERSCAN'
+    assert len(graph['nodes']) == 4 and len(graph['edges']) == 3
+    assert metadata['requests_made'] == len(hybrid_transport)
+    assert graph['simulation'] is False and graph['governance_requests'] == []
+    assert graph['confirmed_frozen_amount_idr'] == '0'
+    assert all(key not in response.text for key in ['crypto-fixture-key', 'etherscan-fixture-key'])
+
+
+@pytest.mark.parametrize('failure', [401, 500, 'malformed-200'])
+def test_fatal_manual_expansion_keeps_accounting_and_blocks_further_spend(client, hybrid_transport, monkeypatch, failure):
+    import main
+    graph = client.post('/api/v1/trail/live-scanner', json={'wallet_address': WALLETS[0],
+        'token_filter': 'ETH', 'max_hops': 3}).json()
+    stored = main.TRACES[graph['trace_id']]['graph']
+    stored.live_metadata.update(cryptoapis_requests_made=4, cryptoapis_credits_consumed=568,
+        cryptoapis_credits_estimated=0, token_filter='ALL')
+    stored.live_metadata['requests_made'] += 4
+    requests_before = stored.live_metadata['requests_made']
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if request.url.path.endswith('/transactions'):
+            return httpx.Response(200, headers={'x-credits-consumed': '142', 'x-credits-available': '88100'},
+                json={'data': {'hasMore': False, 'items': [{
+                    'sender': WALLETS[3], 'recipient': WALLETS[4], 'hash': '0x' + '4' * 64,
+                    'value': {'amount': '1', 'unit': 'ETH'}, 'timestamp': 1700000000, 'status': '0x1'}]}})
+        assert request.url.path.endswith('/tokens-transfers')
+        return httpx.Response(200 if failure == 'malformed-200' else failure,
+            headers={'x-credits-consumed': '100', 'x-credits-available': '88000'},
+            text='private-upstream-secret')
+
+    monkeypatch.setattr(main, 'MultichainScanner', lambda: MultichainScanner(transport=httpx.MockTransport(handler)))
+    url = f'/api/v1/trail/address/{WALLETS[3]}/expand'
+    params = {'trace_id': graph['trace_id'], 'chain': 'ETHEREUM', 'live': 'true'}
+    response = client.get(url, params=params)
+    assert response.status_code == 502, response.text
+    assert all(secret not in response.text for secret in ['private-upstream-secret', 'crypto-fixture-key', 'etherscan-fixture-key'])
+    assert len(calls) == 2
+    assert stored.live_metadata['cryptoapis_requests_made'] == 6
+    assert stored.live_metadata['cryptoapis_credits_consumed'] == 810
+    assert stored.live_metadata['cryptoapis_credits_available'] == 88000
+    assert stored.live_metadata['requests_made'] == requests_before + 2
+    assert len(stored.nodes) == 4 and len(stored.edges) == 3
+
+    response = client.get(url, params=params)
+    assert response.status_code == 200, response.text
+    assert response.json()['metadata']['partial']
+    assert response.json()['metadata']['continuation_status'] == 'BUDGET_LIMIT'
+    assert len(calls) == 2
+    assert stored.live_metadata['cryptoapis_requests_made'] == 6
+    assert stored.live_metadata['cryptoapis_credits_consumed'] == 810

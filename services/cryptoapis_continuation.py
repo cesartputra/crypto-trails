@@ -3,15 +3,19 @@ import asyncio
 from collections import Counter, deque
 from datetime import datetime, timezone
 from decimal import Decimal, localcontext
+from email.utils import parsedate_to_datetime
 from hashlib import sha256
 import json
 import re
+from math import ceil, isfinite
 
 import httpx
 
 from schemas import TrailEdge, TrailNode
 from services.chains import CHAIN_CONFIG, normalize_chain, is_valid_address, is_valid_tx_hash, explorer_address_url, explorer_tx_url
 from services.cryptoapis_config import validate_config
+from services.cryptoapis_limits import (PAGE_SIZE, MAX_REQUESTS, MAX_CREDITS_PER_SCAN, MAX_RETRIES,
+    estimate_request_credits, request_slot, defer_requests)
 from services.etherscan_client import CHAIN_TOKENS, KNOWN_BRIDGE_CONTRACTS, KNOWN_EVM_ENTITIES
 from services.pakd_api_consumer import PAKDAPIConsumer
 
@@ -24,8 +28,10 @@ class CryptoAPIsAPIError(RuntimeError):
     """Safe failure without upstream response bodies or credentials."""
 
 
-class _BudgetReached(Exception):
-    pass
+class _ContinuationStopped(Exception):
+    def __init__(self, reason, message, http_status=None, retry_after=None):
+        super().__init__(message)
+        self.reason, self.http_status, self.retry_after = reason, http_status, retry_after
 
 
 def _amount(value, zero=False):
@@ -64,61 +70,104 @@ def _hash(chain, value):
     return value.lower() if chain != 'SOLANA' else value
 
 
+def _credit_header(headers, name):
+    raw = headers.get(name, '')
+    try:
+        value = D(raw) if len(raw) <= 32 else D('NaN')
+        return value if value.is_finite() and 0 <= value <= 10**12 else None
+    except (ArithmeticError, ValueError, TypeError):
+        return None
+
+
+def _retry_after(raw):
+    if not raw or len(raw) > 128:
+        return None
+    try:
+        seconds = float(raw)
+    except ValueError:
+        try:
+            date = parsedate_to_datetime(raw)
+            seconds = (date - datetime.now(timezone.utc)).total_seconds()
+        except (ValueError, TypeError, OverflowError):
+            return None
+    return max(0.0, seconds) if isfinite(seconds) else None
+
+
 class CryptoAPIsContinuation:
-    MAX_REQUESTS_EVM = 36
-    MAX_REQUESTS_NATIVE = 24
+    MAX_REQUESTS_EVM = MAX_REQUESTS
+    MAX_REQUESTS_NATIVE = MAX_REQUESTS
+    MAX_CREDITS_PER_SCAN = MAX_CREDITS_PER_SCAN
     MAX_NODES = 64
     MAX_EDGES = 128
-    PAGE_SIZE = 10
+    PAGE_SIZE = PAGE_SIZE
 
     def __init__(self, transport=None, pakd_consumer=None):
         self.settings = validate_config()
         self.transport = transport
         self.pakd_consumer = pakd_consumer or PAKDAPIConsumer()
 
-    async def _get(self, client, path, *, listing=False, solana=False):
-        cache_key = path, listing
-        if cache_key in self.cache:
-            return self.cache[cache_key]
-        if self.requests >= self.request_limit:
-            self.truncated = True
-            raise _BudgetReached()
-        self.requests += 1
-        params = {'limit': self.PAGE_SIZE} if listing else None
-        if listing and not solana:
+    async def _get(self, client, path, *, chain, solana=False):
+        if path in self.cache:
+            return self.cache[path]
+        estimate = estimate_request_credits(chain, path.rsplit('/', 1)[-1])
+        params = {'limit': self.PAGE_SIZE}
+        if not solana:
             params['sortingOrder'] = 'descending'
         try:
-            async with client.stream('GET', self.settings['CRYPTOAPIS_BASE_URL'] + path, params=params) as response:
-                status = response.status_code
-                errors = {401: 'autentikasi gagal; periksa CRYPTOAPIS_API_KEY di .env',
-                    402: 'kredit tidak cukup; periksa saldo kredit Crypto APIs',
-                    403: 'akses ditolak; periksa izin key dan paket Crypto APIs',
-                    429: 'kuota permintaan tercapai; coba lagi nanti'}
-                if status in errors:
-                    raise CryptoAPIsAPIError(f'Crypto APIs: {errors[status]} (HTTP {status})')
-                if 300 <= status < 400:
-                    raise CryptoAPIsAPIError('Crypto APIs: redirect ditolak')
-                if status != 200:
-                    raise CryptoAPIsAPIError(f'Crypto APIs gagal (HTTP {status})')
-                raw = bytearray()
-                async for chunk in response.aiter_bytes():
-                    raw.extend(chunk)
-                    if len(raw) > 2_000_000:
-                        raise CryptoAPIsAPIError('Respons Crypto APIs melebihi batas aman')
-            payload = json.loads(raw)
-            if not isinstance(payload, dict) or 'error' in payload or not isinstance(payload.get('data'), dict):
-                raise ValueError()
-            data = payload['data']
-            if listing:
+            for attempt in range(MAX_RETRIES + 1):
+                if self.requests_base + self.requests >= self.request_limit or self.credits_base + self.credits_consumed + self.credits_estimated + estimate > self.MAX_CREDITS_PER_SCAN:
+                    raise _ContinuationStopped('BUDGET_LIMIT', 'Anggaran mode Free Crypto APIs tercapai; hasil yang tersedia dipertahankan.')
+                if self.available_for_requests is not None and self.available_for_requests < estimate:
+                    raise _ContinuationStopped('CREDIT_LIMIT', 'Sisa kredit Crypto APIs yang teramati tidak cukup untuk request berikutnya.')
+                async with request_slot():
+                    self.requests += 1
+                    self.credits_estimated += estimate
+                    async with client.stream('GET', self.settings['CRYPTOAPIS_BASE_URL'] + path, params=params) as response:
+                        consumed = _credit_header(response.headers, 'x-credits-consumed')
+                        available = _credit_header(response.headers, 'x-credits-available')
+                        if consumed is not None:
+                            self.credits_estimated -= estimate
+                            self.credits_consumed += ceil(consumed)
+                        if available is not None:
+                            self.credits_available = int(available)
+                            self.available_for_requests = self.credits_available
+                        elif self.available_for_requests is not None:
+                            self.available_for_requests = max(0, self.available_for_requests - (ceil(consumed) if consumed is not None else estimate))
+                        status = response.status_code
+                        if status == 429:
+                            delay = _retry_after(response.headers.get('Retry-After'))
+                            delay = max(1.2, delay if delay is not None else 2.0)
+                            defer_requests(delay)
+                            retry_fits = self.requests_base + self.requests < self.request_limit and self.credits_base + self.credits_consumed + self.credits_estimated + estimate <= self.MAX_CREDITS_PER_SCAN
+                            available_fits = self.available_for_requests is None or self.available_for_requests >= estimate
+                            if attempt < MAX_RETRIES and delay <= 10 and retry_fits and available_fits:
+                                continue
+                            raise _ContinuationStopped('RATE_LIMIT', 'Crypto APIs membatasi throughput kredit (HTTP 429); kelanjutan dihentikan sementara.', 429, delay)
+                        if status == 402:
+                            raise _ContinuationStopped('CREDIT_LIMIT', 'Kredit Crypto APIs tidak cukup (HTTP 402); hasil fase awal tetap tersedia.', 402)
+                        if status == 403:
+                            raise _ContinuationStopped('ACCESS_LIMIT', 'Akses Crypto APIs ditolak (HTTP 403); periksa izin key, paket dan mainnet.', 403)
+                        if status == 401:
+                            raise CryptoAPIsAPIError('Crypto APIs: autentikasi gagal; periksa CRYPTOAPIS_API_KEY di .env (HTTP 401)')
+                        if 300 <= status < 400:
+                            raise CryptoAPIsAPIError('Crypto APIs: redirect ditolak')
+                        if status != 200:
+                            raise CryptoAPIsAPIError(f'Crypto APIs gagal (HTTP {status})')
+                        raw = bytearray()
+                        async for chunk in response.aiter_bytes():
+                            raw.extend(chunk)
+                            if len(raw) > 2_000_000:
+                                raise CryptoAPIsAPIError('Respons Crypto APIs melebihi batas aman')
+                payload = json.loads(raw)
+                if not isinstance(payload, dict) or 'error' in payload or not isinstance(payload.get('data'), dict):
+                    raise ValueError()
+                data = payload['data']
                 if not isinstance(data.get('items'), list) or type(data.get('hasMore')) is not bool:
                     raise ValueError()
+                self.success_reads += 1
                 self.truncated |= data['hasMore'] or len(data['items']) > self.PAGE_SIZE
-                self.cache[cache_key] = data['items'][:self.PAGE_SIZE]
-                return self.cache[cache_key]
-            if not isinstance(data.get('item'), dict):
-                raise ValueError()
-            self.cache[cache_key] = data['item']
-            return self.cache[cache_key]
+                self.cache[path] = data['items'][:self.PAGE_SIZE]
+                return self.cache[path]
         except httpx.HTTPError:
             raise CryptoAPIsAPIError('Crypto APIs gagal diakses; periksa koneksi atau ketersediaan layanan') from None
         except (ValueError, TypeError):
@@ -215,22 +264,9 @@ class CryptoAPIsContinuation:
     async def _account(self, client, chain, address, depth):
         family = 'solana' if chain == 'SOLANA' else 'evm/' + SLUGS[chain]
         path = f'/addresses-latest/{family}/mainnet/{address}'
-        item = await self._get(client, path + '/balance')
-        try:
-            raw = item['confirmedBalance']
-            unit = CHAIN_CONFIG[chain]['native_symbol']
-            if raw['unit'] not in ({'POL', 'MATIC'} if chain == 'POLYGON' else {unit}):
-                raise ValueError()
-            amount = _coin_amount(chain, raw['amount'], zero=True)
-            node = self.wallets[(chain, address)]
-            if node.scanner_provider == 'CRYPTOAPIS':
-                node.balance_crypto = amount
-                node.metadata['balance_status'] = 'FETCHED'
-        except (ValueError, KeyError, TypeError):
-            raise CryptoAPIsAPIError('Saldo Crypto APIs tidak valid') from None
         categories = ['transactions'] if chain == 'SOLANA' or self.token_filter == 'ETH' else ['tokens-transfers'] if self.token_filter in {'USDT', 'USDC'} else ['transactions', 'tokens-transfers']
         for category in categories:
-            rows = await self._get(client, path + '/' + category, listing=True, solana=chain == 'SOLANA')
+            rows = await self._get(client, path + '/' + category, chain=chain, solana=chain == 'SOLANA')
             if chain == 'SOLANA':
                 transfers = []
                 for row in rows:
@@ -261,7 +297,7 @@ class CryptoAPIsContinuation:
 
     async def _bitcoin(self, client, address, depth):
         path = f'/addresses-latest/utxo/bitcoin/mainnet/{address}'
-        rows = await self._get(client, path + '/transactions', listing=True)
+        rows = await self._get(client, path + '/transactions', chain='BTC')
         for row in rows:
             try:
                 txid, timestamp = _hash('BTC', row['id']), _time(row['timestamp'])
@@ -332,6 +368,12 @@ class CryptoAPIsContinuation:
             raise ValueError('Filter/arah tidak didukung')
         self.result, self.token_filter, self.direction = result, token_filter, direction
         self.requests, self.truncated = 0, False
+        self.requests_base = result['metadata'].get('cryptoapis_requests_made', 0)
+        self.credits_base = result['metadata'].get('cryptoapis_credits_consumed', 0) + result['metadata'].get('cryptoapis_credits_estimated', 0)
+        self.credits_consumed, self.credits_estimated, self.success_reads = 0, 0, 0
+        self.credits_available = result['metadata'].get('cryptoapis_credits_available')
+        self.available_for_requests = self.credits_available
+        stopped = None
         self.request_limit = self.MAX_REQUESTS_EVM if chain in SLUGS else self.MAX_REQUESTS_NATIVE
         self.wallets, self.queue, self.seen, self.outpoints = {}, deque(), Counter(), {}
         self.activity, self.cache = [], {}
@@ -373,16 +415,29 @@ class CryptoAPIsContinuation:
                             await self._bitcoin(client, address, depth)
                         else:
                             await self._account(client, current, address, depth)
-        except _BudgetReached:
-            pass
+        except _ContinuationStopped as exc:
+            stopped = exc
+            self.truncated = True
         except TimeoutError:
-            raise CryptoAPIsAPIError('Batas waktu Crypto APIs tercapai; kurangi hop atau ulangi nanti') from None
+            stopped = _ContinuationStopped('TIMEOUT', 'Waktu kelanjutan Crypto APIs habis; hasil yang tersedia tetap ditampilkan.')
+            self.truncated = True
+        finally:
+            metadata = result['metadata']
+            metadata.update(max_hops=max_hops, cryptoapis_requests_made=metadata.get('cryptoapis_requests_made', 0) + self.requests,
+                cryptoapis_mode='FREE', cryptoapis_page_size=self.PAGE_SIZE, cryptoapis_request_limit=self.request_limit,
+                cryptoapis_credit_limit=self.MAX_CREDITS_PER_SCAN,
+                cryptoapis_credits_consumed=metadata.get('cryptoapis_credits_consumed', 0) + self.credits_consumed,
+                cryptoapis_credits_estimated=metadata.get('cryptoapis_credits_estimated', 0) + self.credits_estimated,
+                cryptoapis_credits_available=self.credits_available,
+                cryptoapis_history_window_days=1 if chain == 'SOLANA' else 14,
+                requests_made=metadata.get('requests_made', 0) + self.requests,
+                truncated=metadata.get('truncated', False) or self.truncated)
         metadata = result['metadata']
-        metadata.update(max_hops=max_hops, cryptoapis_requests_made=metadata.get('cryptoapis_requests_made', 0) + self.requests,
-            cryptoapis_history_window_days=1 if chain == 'SOLANA' else 14,
-            requests_made=metadata.get('requests_made', 0) + self.requests,
-            truncated=metadata.get('truncated', False) or self.truncated)
-        if self.requests:
+        if stopped:
+            metadata.update(partial=True, continuation_status=stopped.reason, cryptoapis_stop_reason=str(stopped),
+                cryptoapis_http_status=stopped.http_status, retry_after_seconds=stopped.retry_after)
+            result['warnings'].append(str(stopped))
+        if self.success_reads:
             providers = list(dict.fromkeys([*metadata.get('provider', '').split(', '), 'CRYPTOAPIS']))
             metadata['provider'] = metadata['scanner_provider'] = ', '.join(filter(None, providers))
             metadata['activity'] = [*metadata.get('activity', []), *self.activity]

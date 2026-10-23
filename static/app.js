@@ -219,6 +219,14 @@ async function traceLive() {
     $("#live-status").textContent += ` ${liveScanScope({ ...graph.live_metadata, source_chain: payload.source_chain, max_hops: payload.max_hops })}.`;
     if (graph.live_metadata?.continuation_status === "NO_FRONTIER") $("#live-status").textContent += " Fase awal belum menemukan wallet baru pada hop ketiga; Crypto APIs belum dipanggil.";
     if (graph.live_metadata?.fallback_reason === "SOLSCAN_PLAN_REQUIRED") $("#live-status").textContent = "Paket Solscan belum mengizinkan endpoint akun; fase awal diambil melalui RPC publik. " + $("#live-status").textContent;
+    if (graph.live_metadata?.partial) {
+      const metadata = graph.live_metadata;
+      const reasons = { RATE_LIMIT: "Batas laju Crypto APIs tercapai.", CREDIT_LIMIT: "Kredit Crypto APIs tidak mencukupi.", ACCESS_LIMIT: "Paket Crypto APIs belum mengizinkan endpoint ini.", BUDGET_LIMIT: "Anggaran kelanjutan Crypto APIs tercapai.", TIMEOUT: "Waktu kelanjutan Crypto APIs habis." };
+      const notice = `Hasil parsial: ${metadata.wallet_hops_traced ?? graph.hop_count ?? 0} dari ${payload.max_hops} hop wallet ditelusuri. ${metadata.cryptoapis_stop_reason || reasons[metadata.continuation_status] || "Kelanjutan Crypto APIs belum selesai."} Data yang berhasil diperoleh tetap ditampilkan.${metadata.retry_after_seconds > 0 ? ` Coba lagi setelah ${metadata.retry_after_seconds} detik.` : ""}`;
+      $("#live-status").textContent += ` ${notice}`;
+      $("#warnings").textContent = [notice, ...(graph.warnings || [])].join(" · ");
+      $("#warnings").hidden = false;
+    }
   } catch (error) {
     if (requestId !== state.request) return;
     failTrace(error, true);
@@ -267,8 +275,9 @@ function liveScanScope(metadata = {}) {
   const primary = metadata.source_chain === "BTC" ? "Mempool.space / Blockstream" : metadata.source_chain === "SOLANA" ? "Solscan / Solana RPC" : "Etherscan / Blockscout";
   const days = metadata.cryptoapis_history_window_days ?? (metadata.source_chain === "SOLANA" ? 1 : 14);
   const continuation = maxHops > 3 ? `; hop 4–${maxHops}: Crypto APIs (sampel terbaru hingga ${days} hari)` : "";
-  const budget = metadata.requests_made === undefined ? "dibatasi anggaran API" : `${metadata.requests_made} permintaan API${maxHops > 3 ? `, ${metadata.cryptoapis_requests_made ?? 0} ke Crypto APIs` : ""}`;
-  return `${maxHops} hop · hop 1–${Math.min(maxHops, 3)}: ${primary}${continuation} · ${budget}`;
+  const requests = metadata.requests_made === undefined ? "dibatasi anggaran API" : `${metadata.requests_made} permintaan API total`;
+  const freeBudget = maxHops > 3 ? ` · Free: sampel ${metadata.cryptoapis_page_size ?? 1} transaksi/kategori/alamat; ${metadata.cryptoapis_requests_made ?? 0}/${metadata.cryptoapis_request_limit ?? 6} permintaan Crypto APIs; kredit ${metadata.cryptoapis_credits_consumed ?? 0} terukur + ${metadata.cryptoapis_credits_estimated ?? 0} perkiraan / ${metadata.cryptoapis_credit_limit ?? 2000} anggaran${metadata.cryptoapis_credits_available == null ? "" : `, sisa akun teramati ${metadata.cryptoapis_credits_available}`}` : "";
+  return `${maxHops} hop diminta · hop 1–${Math.min(maxHops, 3)}: ${primary}${continuation} · ${requests}${freeBudget}`;
 }
 function isLiveTransfer(record) {
   if (!isLiveRecord(record) || isCandidateEdge(record) || isBridgeEdge(record)) return false;

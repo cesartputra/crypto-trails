@@ -66,31 +66,34 @@ for (const id of ['chain-dispersal-cards', 'chain-filters', 'run-scenario-button
 async function checkLiveRequests() {
   const requestSource = source.slice(source.indexOf('async function api('), source.indexOf('function log('));
   const beginSource = source.slice(source.indexOf('function beginTrace('), source.indexOf('function acceptGraph('));
+  const acceptSource = source.slice(source.indexOf('function acceptGraph('), source.indexOf('function failTrace('));
   const failSource = source.slice(source.indexOf('function failTrace('), source.indexOf('async function trace()'));
   const traceSource = source.slice(source.indexOf('async function traceLive('), source.indexOf('function isLiveRecord('));
   const hopOptions = html.match(/<select id="live-hops"[^>]*>(.*?)<\/select>/s)[1];
   assert.deepEqual([...hopOptions.matchAll(/value="(\d+)"/g)].map((option) => Number(option[1])), [1, 2, 3, 4, 5, 6]);
   assert.equal(/<input[^>]+(?:name|id)="[^"]*cryptoapis[^"]*key/i.test(html), false, 'Crypto APIs credentials must stay on the server');
-  let sent, failure = false;
+  let sent, partialGraph, failure = false;
   Object.assign(context, { JSON, Error,
     fetch: async (path, options) => {
       sent = { path, method: options.method, body: JSON.parse(options.body) };
       const primary = sent.body.source_chain === 'BTC' ? 'MEMPOOL_SPACE' : sent.body.source_chain === 'SOLANA' ? 'SOLANA_MAINNET_RPC' : 'ETHERSCAN_V2';
-      return { ok: !failure, json: async () => failure ? { detail: 'Crypto APIs quota exceeded' } : {
+      return { ok: !failure, json: async () => failure ? { detail: 'Crypto APIs quota exceeded' } : partialGraph || {
         simulation: false, nodes: [], edges: [], live_metadata: {
           provider: sent.body.max_hops > 3 ? primary + ',CRYPTOAPIS' : primary, source_chain: sent.body.source_chain,
           cryptoapis_history_window_days: sent.body.source_chain === 'SOLANA' ? 1 : 14,
           hop_strategy: { initial_max_hops: 3, continuation_provider: 'CRYPTOAPIS', max_hops: sent.body.max_hops },
           requests_made: 9, cryptoapis_requests_made: sent.body.max_hops > 3 ? 3 : 0,
+          cryptoapis_mode: 'FREE', cryptoapis_page_size: 1, cryptoapis_request_limit: 6, cryptoapis_credit_limit: 2000,
+          cryptoapis_credits_consumed: 500, cryptoapis_credits_estimated: 1000,
           fallback_reason: sent.body.source_chain === 'SOLANA' ? 'SOLSCAN_PLAN_REQUIRED' : undefined,
           activity: [{ signature: '3'.repeat(88), status: 'UNSUPPORTED_INSTRUCTION' }] }
       } };
     },
     validateLiveAddress: () => true,
-    acceptGraph: (graph) => { state.graph = graph; },
-    stopAnimation() {}, renderStepper() {}, renderInspector() {}, renderEvidence() {}, renderPakd() {}, renderActions() {}, toast() {}, log() {} });
+    stopAnimation() {}, renderCaseSummary() {}, renderMetrics() {}, renderGraph() {}, resetView() {}, selectNode() {},
+    renderStepper() {}, renderInspector() {}, renderEvidence() {}, renderPakd() {}, renderActions() {}, toast() {}, log() {} });
   state.request = 0; state.packets = new Map(); state.decisionDrafts = new Map(); state.busyRequests = new Set();
-  vm.runInContext(`${requestSource}\n${beginSource}\n${failSource}\n${traceSource}`, context);
+  vm.runInContext(`${requestSource}\n${beginSource}\n${acceptSource}\n${failSource}\n${traceSource}`, context);
   context.$('#live-form').reportValidity = () => true;
   context.$('#live-wallet').value = '  0x' + '1'.repeat(40) + '  ';
   context.$('#live-hops').value = hopOptions.match(/value="(\d+)" selected/)[1]; context.$('#live-token').value = 'ALL';
@@ -111,6 +114,9 @@ async function checkLiveRequests() {
     assert.match(context.$('#live-status').textContent, /6 hop/);
     assert.match(context.$('#live-status').textContent, /hop 1–3/i);
     assert.match(context.$('#live-status').textContent, /hop 4–6/i);
+    assert.match(context.$('#live-status').textContent, /Free/i);
+    assert.match(context.$('#live-status').textContent, /3\/6 permintaan Crypto APIs/);
+    assert.match(context.$('#live-status').textContent, /500 terukur \+ 1000 perkiraan.*2000/);
     assert.match(context.$('#live-status').textContent, chain === 'BTC' ? /Mempool.space/ : chain === 'SOLANA' ? /Solana Mainnet RPC/ : /Etherscan V2/);
     if (chain === 'SOLANA') assert.match(context.$('#live-status').textContent, /RPC publik/);
     assert.equal(context.$('#live-status').textContent.includes('evm-test-key'), false);
@@ -120,7 +126,32 @@ async function checkLiveRequests() {
   await context.traceLive();
   assert.equal(sent.body.etherscan_api_key, undefined, 'Empty optional Etherscan key must be omitted');
   assert.match(context.$('#live-status').textContent, /hop 1–2/i);
-  assert.doesNotMatch(context.$('#live-status').textContent, /Crypto APIs|14 hari/, 'Primary-only scans must not claim a continuation window');
+  assert.doesNotMatch(context.$('#live-status').textContent, /Crypto APIs|14 hari|Free|2000/, 'Primary-only scans must not claim a continuation window or Free budget');
+  context.$('#live-hops').value = '6';
+  const primaryNodes = [node('seed', 0, 'SEED_WALLET', 'ONCHAIN_WALLET', 'ETHEREUM'), ...[1, 2, 3].map((hop) => node(`primary-hop-${hop}`, hop, 'WALLET', 'ONCHAIN_WALLET', 'ETHEREUM'))];
+  const primaryEdges = [1, 2, 3].map((hop) => ({ ...edge(primaryNodes[hop - 1].id, primaryNodes[hop].id), chain: 'ETHEREUM', tx_hash: '0x' + String(hop).repeat(64), metadata: { is_live: true } }));
+  partialGraph = { simulation: false, nodes: primaryNodes, edges: primaryEdges, warnings: ['Transaksi publik belum membuktikan atribusi dana laporan.'], live_metadata: {
+    provider: 'ETHERSCAN_V2', source_chain: 'ETHEREUM', partial: true, wallet_hops_traced: 3,
+    continuation_status: 'RATE_LIMIT', cryptoapis_stop_reason: 'Batas laju Crypto APIs tercapai; data scanner utama tetap tersedia.', cryptoapis_http_status: 429,
+    retry_after_seconds: 1.5, requests_made: 5, cryptoapis_requests_made: 2,
+    cryptoapis_mode: 'FREE', cryptoapis_page_size: 1, cryptoapis_request_limit: 6, cryptoapis_credit_limit: 2000,
+    cryptoapis_credits_consumed: 0, cryptoapis_credits_estimated: 1000, cryptoapis_credits_available: 9000,
+    hop_strategy: { initial_max_hops: 3, continuation_provider: 'CRYPTOAPIS', max_hops: 6 }
+  } };
+  await context.traceLive();
+  assert.equal(state.graph, partialGraph, 'HTTP 200 partial results must retain the returned evidence');
+  assert.equal(state.graph.simulation, false);
+  assert.equal(state.graph.nodes, primaryNodes); assert.equal(state.graph.edges, primaryEdges);
+  assert.equal(state.graph.live_metadata.provider, 'ETHERSCAN_V2', 'A limited Crypto APIs request must not claim successful provider data');
+  assert.match(context.$('#live-status').textContent, /^Etherscan V2:/);
+  assert.match(context.$('#live-status').textContent, /Hasil parsial.*3 dari 6 hop/);
+  assert.match(context.$('#live-status').textContent, /Batas laju Crypto APIs/);
+  assert.match(context.$('#live-status').textContent, /1.5 detik/);
+  assert.match(context.$('#live-status').textContent, /sisa akun teramati 9000/);
+  assert.equal(context.$('#warnings').hidden, false);
+  assert.match(context.$('#warnings').textContent, /Hasil parsial.*3 dari 6 hop/);
+  assert.match(context.$('#warnings').textContent, /Transaksi publik belum membuktikan atribusi/);
+  assert.doesNotMatch(context.$('#warnings').textContent, /Penelusuran gagal/);
   failure = true;
   await context.traceLive();
   assert.equal(state.graph, null, 'Failed live requests must clear previous evidence');
@@ -129,4 +160,4 @@ async function checkLiveRequests() {
   assert.match(context.$('#live-status').textContent, /Crypto APIs quota exceeded/);
   assert.equal(context.$('#live-trace-button').disabled, false);
 }
-checkLiveRequests().then(() => console.log('PASS: chain filtering, evidence preservation, safe explorer links, six-hop hybrid requests, optional Etherscan key hygiene, continuation-only history scope, native activity, and empty graph on API failure.')).catch((error) => { console.error(error); process.exitCode = 1; });
+checkLiveRequests().then(() => console.log('PASS: chain filtering, evidence preservation, safe explorer links, six-hop hybrid requests, optional Etherscan key hygiene, continuation-only Free budgets, native activity, preserved partial-limit evidence, and empty graph on API failure.')).catch((error) => { console.error(error); process.exitCode = 1; });

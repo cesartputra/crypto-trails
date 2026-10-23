@@ -3,6 +3,7 @@ from collections import OrderedDict
 from decimal import Decimal
 from html import escape
 from pathlib import Path
+import threading
 import time
 from uuid import uuid4
 from fastapi import FastAPI, HTTPException, Query, Request
@@ -49,7 +50,7 @@ def store_trace(graph):
         TRACES.pop(key, None)
     while len(TRACES) >= MAX_TRACES:
         TRACES.popitem(last=False)
-    TRACES[graph.trace_id] = {"graph": graph, "created": now, "packets": {}, "expansions": {}}
+    TRACES[graph.trace_id] = {"graph": graph, "created": now, "packets": {}, "expansions": {}, "expansion_lock": threading.Lock()}
 
 
 def stamp_chain_evidence(nodes, edges):
@@ -245,6 +246,15 @@ async def trace_report(handoff: FNAMoneyTrailHandoffInput):
 async def expand_address(address: str, trace_id: str = Query(min_length=1, max_length=80),
                          chain: str = Query(default="TRON_TRC20"), live: bool = False):
     state = require_trace(trace_id)
+    if not state["expansion_lock"].acquire(blocking=False):
+        raise HTTPException(409, "Perluasan trace masih berjalan; tunggu lalu coba lagi.")
+    try:
+        return await _expand_address(state, address, chain, live)
+    finally:
+        state["expansion_lock"].release()
+
+
+async def _expand_address(state, address, chain, live):
     graph = state["graph"]
     try:
         canonical = normalize_chain(chain)
@@ -302,10 +312,13 @@ async def expand_address(address: str, trace_id: str = Query(min_length=1, max_l
         metadata, added = graph.live_metadata, result.get('metadata', {})
         providers = [*metadata.get('provider', '').split(', '), *added.get('provider', '').split(', ')]
         metadata['provider'] = metadata['scanner_provider'] = ', '.join(dict.fromkeys(filter(None, providers)))
-        metadata['requests_made'] = metadata.get('requests_made', 0) + added.get('expansion_requests_made', 0)
-        metadata['cryptoapis_requests_made'] = metadata.get('cryptoapis_requests_made', 0) + added.get('expansion_cryptoapis_requests_made', 0)
+        if added.get('cryptoapis_mode') == 'FREE':
+            metadata.update({key: value for key, value in added.items() if key.startswith('cryptoapis_') or key in {'requests_made', 'partial', 'continuation_status', 'retry_after_seconds'}})
+        else:
+            metadata['requests_made'] = metadata.get('requests_made', 0) + added.get('expansion_requests_made', 0)
         metadata['wallet_hops_traced'] = max((n.metadata.get('wallet_hop', 0) for n in graph.nodes), default=0)
         graph.hop_count = max((n.hop for n in graph.nodes), default=0)
+        graph.warnings.extend(warning for warning in result.get('warnings', []) if warning not in graph.warnings)
     graph.pakd_api_exchange_logs.extend(PAKDAPICallLog.model_validate(log) for log in result.get("pakd_api_exchange_logs", []))
     state["expansions"][cache_key] = result
     return result

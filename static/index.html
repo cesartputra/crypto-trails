@@ -68,7 +68,7 @@
           <section id="live-panel" role="tabpanel" aria-labelledby="live-tab" hidden>
             <div class="section-caption">CEK AKTIVITAS WALLET PUBLIK</div>
             <h3 class="live-title">Live Scanner hingga 6 Hop <span>Bitcoin · Solana · Ethereum / EVM</span></h3>
-            <p class="live-intro">Hop 1–3 memakai scanner utama sesuai blockchain; hop 4–6 dilanjutkan melalui Crypto APIs. Fase Crypto APIs mengambil sampel terbaru: Bitcoin / EVM hingga 14 hari, Solana hingga 1 hari. Hasil dibatasi kuota dan aktivitas yang tersedia.</p>
+            <p class="live-intro">Hop 1–3 memakai scanner utama sesuai blockchain; hop 4–6 dilanjutkan melalui Crypto APIs. Mode Free: sampel 1 transaksi/kategori/alamat; kelanjutan dibatasi anggaran. Sampel terbaru: Bitcoin / EVM hingga 14 hari, Solana hingga 1 hari. Hasil parsial tetap menampilkan data yang berhasil diperoleh.</p>
             <form id="live-form" autocomplete="off">
               <label>Blockchain<select id="live-chain" name="source_chain"><option value="BTC">🟠 Bitcoin (BTC)</option><option value="SOLANA">🟣 Solana (SOL)</option><option value="ETHEREUM" selected>🔵 Ethereum (ETH)</option><option value="ARBITRUM">Arbitrum [42161]</option><option value="POLYGON">Polygon [137]</option><option value="BASE">Base [8453]</option><option value="OPTIMISM">Optimism [10]</option><option value="BSC">BNB Smart Chain [56]</option></select></label>
               <label id="live-wallet-label">Alamat wallet publik<input id="live-wallet" name="wallet_address" value="0xf977814e90da44bfa03b6295a0616a897441acec" required maxlength="100" placeholder="Alamat sesuai blockchain…" spellcheck="false" autocapitalize="off"></label>
@@ -82,7 +82,7 @@
               <label class="checkbox-label"><input id="live-origin" name="simulate_fna_and_mirror_origin" type="checkbox"><span>Sertakan Hulu FNA Money Trails & PAKD Mirror DB <small>Simulasi hulu, terpisah dari transaksi mainnet asli.</small></span></label>
               </details>
               <button id="live-trace-button" class="button primary live-trace-button" type="submit">🌐 Jalankan Live Scanner</button>
-              <p id="live-status" class="live-status" role="status" aria-live="polite">6 hop · scanner utama pada hop 1–3 → Crypto APIs pada hop 4–6; dibatasi kuota layanan.</p>
+              <p id="live-status" class="live-status" role="status" aria-live="polite">Hingga 6 hop · scanner utama pada hop 1–3 → Crypto APIs Free pada hop 4–6; kelanjutan dibatasi anggaran.</p>
             </form>
           </section>
         </div>
