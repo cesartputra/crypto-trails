@@ -2,7 +2,7 @@
 
 const $ = (selector) => document.querySelector(selector);
 const NS = "http://www.w3.org/2000/svg";
-const state = { scenarios: [], scenarioId: null, graph: null, selected: null, selectedEdge: null, mode: "scenario", positions: new Map(), scale: 1, x: 0, y: 0, animation: 0, request: 0, packets: new Map(), busyRequests: new Set(), selectedRequestId: null, decisionDrafts: new Map(), logs: [], baseWidth: 1160, baseHeight: 650, viewportWidth: 0, viewportHeight: 0, chainFilter: "ALL", timeRange: "ALL", viewNodes: [], viewEdges: [], branchByNode: new Map(), lanes: [], currentStep: 3 };
+const state = { scenarios: [], scenarioId: null, graph: null, selected: null, selectedEdge: null, mode: "scenario", positions: new Map(), scale: 1, x: 0, y: 0, animation: 0, request: 0, packets: new Map(), busyRequests: new Set(), selectedRequestId: null, decisionDrafts: new Map(), logs: [], baseWidth: 1160, baseHeight: 650, viewportWidth: 0, viewportHeight: 0, chainFilter: "ALL", timeRange: "ALL", viewNodes: [], viewEdges: [], branchByNode: new Map(), lanes: [], currentStep: 3, focusMainPath: true, investigationView: "flow", flowProjection: null };
 const idr = (value) => new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value || 0));
 const number = (value, digits = 2) => new Intl.NumberFormat("id-ID", { maximumFractionDigits: digits }).format(Number(value || 0));
 const short = (value, size = 20) => String(value || "").length > size ? `${String(value).slice(0, size - 2)}…` : String(value || "");
@@ -112,6 +112,9 @@ function beginTrace(live = false) {
   const requestId = ++state.request;
   stopAnimation();
   state.graph = null;
+  state.flowProjection = null; state.viewNodes = []; state.viewEdges = [];
+  $("#audit-trail-body")?.replaceChildren();
+  if ($("#audit-trail-empty")) $("#audit-trail-empty").hidden = false;
   state.selected = null;
   state.selectedEdge = null;
   state.packets.clear();
@@ -578,92 +581,49 @@ function graphBranches(graph) {
   return branches;
 }
 
-function networkLayout(nodes, edges) {
-  const ordered = [...nodes].sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-  const adjacency = new Map(ordered.map((node) => [node.id, new Set()]));
-  for (const edge of edges) if (edge.source !== edge.target && adjacency.has(edge.source) && adjacency.has(edge.target)) { adjacency.get(edge.source).add(edge.target); adjacency.get(edge.target).add(edge.source); }
-  const visited = new Set(), components = [];
-  for (const node of ordered) {
-    if (visited.has(node.id)) continue;
-    const ids = [node.id]; visited.add(node.id);
-    for (let index = 0; index < ids.length; index++) for (const next of [...adjacency.get(ids[index])].sort()) if (!visited.has(next)) { visited.add(next); ids.push(next); }
-    ids.sort((a, b) => adjacency.get(b).size - adjacency.get(a).size || (a < b ? -1 : a > b ? 1 : 0));
-    const points = ids.map((id, index) => ({ id, x: Math.cos(index * 2.3999632297) * 115 * Math.sqrt(index), y: Math.sin(index * 2.3999632297) * 115 * Math.sqrt(index) }));
-    const indexById = new Map(ids.map((id, index) => [id, index]));
-    const links = ids.flatMap((id, index) => [...adjacency.get(id)].filter((other) => id < other).sort().map((other) => [index, indexById.get(other)]));
-    for (let iteration = 0; iteration < 100; iteration++) {
-      const forces = points.map((point) => ({ x: -point.x * .002, y: -point.y * .002 }));
-      for (let a = 0; a < points.length; a++) for (let b = a + 1; b < points.length; b++) {
-        const dx = points[b].x - points[a].x, dy = points[b].y - points[a].y, distance = Math.max(1, Math.hypot(dx, dy));
-        const force = 7000 / (distance * distance), fx = dx / distance * force, fy = dy / distance * force;
-        forces[a].x -= fx; forces[a].y -= fy; forces[b].x += fx; forces[b].y += fy;
-      }
-      for (const [a, b] of links) {
-        const dx = points[b].x - points[a].x, dy = points[b].y - points[a].y, distance = Math.max(1, Math.hypot(dx, dy));
-        const force = (distance - 185) * .025, fx = dx / distance * force, fy = dy / distance * force;
-        forces[a].x += fx; forces[a].y += fy; forces[b].x -= fx; forces[b].y -= fy;
-      }
-      const step = 8 * (1 - iteration / 120);
-      points.forEach((point, index) => { const length = Math.max(1, Math.hypot(forces[index].x, forces[index].y)); point.x += forces[index].x / length * Math.min(length, step); point.y += forces[index].y / length * Math.min(length, step); });
-    }
-    for (let pass = 0; pass < 100; pass++) {
-      let overlap = false;
-      for (let a = 0; a < points.length; a++) for (let b = a + 1; b < points.length; b++) {
-        let dx = points[b].x - points[a].x, dy = points[b].y - points[a].y, distance = Math.hypot(dx, dy);
-        if (distance >= 132) continue;
-        if (distance < .01) { dx = 1; dy = 0; distance = 1; }
-        const shift = (132 - distance + .1) / 2, fx = dx / distance * shift, fy = dy / distance * shift;
-        points[a].x -= fx; points[a].y -= fy; points[b].x += fx; points[b].y += fy; overlap = true;
-      }
-      if (!overlap) break;
-    }
-    const minX = Math.min(...points.map((point) => point.x)), minY = Math.min(...points.map((point) => point.y));
-    components.push({ points, minX, minY, width: Math.max(...points.map((point) => point.x)) - minX + 240, height: Math.max(...points.map((point) => point.y)) - minY + 240 });
-  }
-  const positions = new Map(), rowWidth = Math.max(500, Math.sqrt(components.reduce((sum, part) => sum + part.width * part.height, 0)) * 1.35);
-  let x = 20, y = 20, rowHeight = 0, width = 400, height = 300;
-  for (const part of components) {
-    if (x > 20 && x + part.width > rowWidth) { x = 20; y += rowHeight + 50; rowHeight = 0; }
-    for (const point of part.points) positions.set(point.id, { x: x + point.x - part.minX + 120, y: y + point.y - part.minY + 120 });
-    width = Math.max(width, x + part.width + 20); height = Math.max(height, y + part.height + 20);
-    x += part.width + 50; rowHeight = Math.max(rowHeight, part.height);
-  }
-  return { positions, width, height };
-}
-
 function layoutNodes() {
-  const view = visibleGraph(); state.viewNodes = view.nodes; state.viewEdges = view.edges;
-  const board = $("#graph-scroll"), height = board.clientHeight || 500;
-  state.viewportWidth = Math.max(300, board.clientWidth); state.viewportHeight = height;
-  const layout = networkLayout(view.nodes, view.edges);
-  const stretch = state.viewportWidth > height ? Math.max(1, Math.min(1.7, (state.viewportWidth / height) / (layout.width / layout.height))) : 1;
-  for (const point of layout.positions.values()) point.x *= stretch;
-  state.positions = layout.positions; state.lanes = [];
-  state.baseWidth = layout.width * stretch; state.baseHeight = layout.height; state.labelLength = 24;
-  const svg = $("#graph"); svg.setAttribute("viewBox", `0 0 ${state.viewportWidth} ${state.viewportHeight}`); svg.style.height = "100%"; svg.style.width = "100%";
-  $("#swimlanes").replaceChildren();
+  const scoped = visibleGraph();
+  const view = ForensicGraph.project({ ...state.graph, ...scoped }, { focus: state.focusMainPath !== false });
+  state.flowProjection = view; state.viewNodes = view.nodes; state.viewEdges = view.edges;
+  const layout = ForensicGraph.layout(view), board = $("#graph-scroll");
+  state.viewportWidth = Math.max(300, board.clientWidth); state.viewportHeight = board.clientHeight || 560;
+  state.positions = layout.positions; state.lanes = layout.columns;
+  state.baseWidth = layout.width; state.baseHeight = layout.height;
+  $("#swimlanes").replaceChildren(...layout.columns.flatMap((column) => [
+    svgEl("rect", { class: "tier-divider", x: column.x - 121, y: 48, width: 242, height: layout.height - 60, rx: 12 }),
+    svgEl("text", { class: "tier-header", x: column.x - 112, y: 29 }, column.label),
+  ]));
 }
 
 function edgeGeometry(source, target, index = 0, count = 1) {
-  const dx = target.x - source.x, dy = target.y - source.y, length = Math.hypot(dx, dy);
-  if (length < 1) {
-    const radius = 76 + Math.min(index, 4) * 14;
-    return { path: `M${source.x + 28} ${source.y - 18} C${source.x + radius} ${source.y - radius} ${source.x + radius} ${source.y + radius} ${source.x + 30} ${source.y + 18}`, labelX: source.x + 74, labelY: source.y - 44 - Math.min(index, 4) * 14 };
+  const dx = target.x - source.x, dy = target.y - source.y;
+  const offset = count > 1 ? (index - (count - 1) / 2) * 70 : 0;
+  if (Math.abs(dx) < 20) {
+    const direction = source.x > state.baseWidth / 2 ? -1 : 1;
+    const side = source.x + direction * (135 + Math.abs(offset)), sy = source.y - 12, ty = target.y + 12;
+    return { path: `M${source.x + direction * 105} ${sy} C${side + direction * 65} ${sy - 65} ${side + direction * 65} ${ty + 65} ${target.x + direction * 105} ${ty}`, labelX: side + direction * 25, labelY: source.y === target.y ? source.y - 62 : (sy + ty) / 2 };
   }
-  const ux = dx / length, uy = dy / length;
-  const sourceOffset = 36, targetOffset = 41;
-  const sx = source.x + ux * sourceOffset, sy = source.y + uy * sourceOffset;
-  const tx = target.x - ux * targetOffset, ty = target.y - uy * targetOffset;
-  const offset = count > 1 ? (index - (count - 1) / 2) / Math.max(1, count - 1) * 110 : 0;
-  const bendX = -dy / length * offset, bendY = dx / length * offset;
-  if (Math.abs(dx) < 20) return {
-    path: `M${sx} ${sy} C${sx + 50 + bendX} ${sy + dy * .3 + bendY} ${tx + 50 + bendX} ${ty - dy * .3 + bendY} ${tx} ${ty}`,
-    labelX: sx + 50 + bendX * .75, labelY: (sy + ty) / 2 + bendY * .75 + offset * .5,
-  };
-  return {
-    path: `M${sx} ${sy} C${sx + dx * .45 + bendX} ${sy + bendY} ${tx - dx * .45 + bendX} ${ty + bendY} ${tx} ${ty}`,
-    labelX: (sx + tx) / 2 + bendX * .75, labelY: (sy + ty) / 2 - 10 + bendY * .75,
-  };
+  const direction = dx > 0 ? 1 : -1, sx = source.x + direction * 108, tx = target.x - direction * 112;
+  const bend = Math.max(42, Math.abs(tx - sx) * .48);
+  return { path: `M${sx} ${source.y} C${sx + direction * bend} ${source.y + offset} ${tx - direction * bend} ${target.y + offset} ${tx} ${target.y}`, labelX: (sx + tx) / 2, labelY: Math.abs(dy) < 80 ? Math.min(source.y,target.y) - 58 + offset : (source.y + target.y) / 2 + offset * .75 - 10 };
+}
+
+function placeEdgeLabel(geometry, width, occupied) {
+  const labelX = Math.max(width / 2 + 8, Math.min(state.baseWidth - width / 2 - 8, geometry.labelX));
+  const initial = Math.max(66, Math.min(state.baseHeight - 22, geometry.labelY));
+  const clear = box => !occupied.some(other => box.x < other.x + other.width + 4 && box.x + box.width + 4 > other.x && box.y < other.y + other.height + 4 && box.y + box.height + 4 > other.y);
+  for (let step = 0; step <= Math.ceil(state.baseHeight / 26); step++) {
+    for (const direction of step ? [-1,1] : [1]) {
+      const labelY = initial + direction * step * 26;
+      if (labelY < 66 || labelY > state.baseHeight - 22) continue;
+      const box = {x:labelX - width / 2,y:labelY - 13,width,height:22};
+      if (clear(box)) { occupied.push(box); return {...geometry,labelX,labelY}; }
+    }
+  }
+  const labelY = state.baseHeight + 26;
+  state.baseHeight += 52;
+  occupied.push({x:labelX-width/2,y:labelY-13,width,height:22});
+  return {...geometry,labelX,labelY};
 }
 
 function parallelEdgeSlots(edges) {
@@ -685,60 +645,43 @@ function renderGraph() {
   layoutNodes();
   if ($("#graph-empty")) $("#graph-empty").hidden = state.viewNodes.length > 0;
   const slots = parallelEdgeSlots(state.viewEdges);
-  const edgeElements = state.viewEdges.map((edge) => {
-    const source = state.positions.get(edge.source), target = state.positions.get(edge.target);
-    if (!source || !target) return null;
-    const fromNode = state.graph.nodes.find((node) => node.id === edge.source);
-    const toNode = state.graph.nodes.find((node) => node.id === edge.target);
-    const escrow = /ESCROW|SETTLEMENT/.test(edge.edge_type || "");
-    const crossChain = isBridgeEdge(edge);
-    const candidate = isCandidateEdge(edge);
-    const theme = crossChain ? {color:"#589fa9",marker:"cyan"} : {color:"#a7b1b8",marker:"amber"};
-    const group = svgEl("g", { class: `edge-group${crossChain ? " cross-chain-edge" : ""}${candidate ? " bridge-candidate" : ""}${state.selectedEdge === edge.id ? " selected" : ""}`, "data-edge-id": edge.id, "data-source": edge.source, "data-target": edge.target, "data-marker": theme.marker, tabindex: 0, role: "button", "aria-label": `Inspeksi transaksi ${edge.label || edge.asset || edge.id}`, "aria-pressed": String(state.selectedEdge === edge.id) });
-    const slot = slots.get(edge.id);
-    const { path, labelX, labelY } = edgeGeometry(source, target, slot.index, slot.count);
-    const line = svgEl("path", { class: `graph-edge${crossChain ? " bridge-path" : ""}${escrow ? " escrow" : ""}`, d: path, stroke: theme.color, "marker-end": `url(#arrow-${theme.marker})` });
-    const label = crossChain ? `${candidate ? "KANDIDAT" : "BRIDGE"}: ${chainInfo(edge.bridged_from_chain)?.badge || chainInfo(fromNode)?.badge || "?"} → ${chainInfo(edge.bridged_to_chain)?.badge || chainInfo(toNode)?.badge || "?"}` : edge.crypto_amount != null && Number(edge.crypto_amount) > 0 ? `${number(edge.crypto_amount, 4)} ${edge.asset || "USDT"}` : Number(edge.amount_idr) > 0 ? compactIdr(edge.amount_idr) : short(edge.label || friendly(edge.edge_type), 20);
-    const text = svgEl("text", { class: `edge-label${escrow ? " escrow" : ""}`, x: labelX, y: labelY }, label);
-    const hit = svgEl("path", { class: "edge-hit", d: path });
-    group.append(hit, line, text, svgEl("title", {}, `${edge.label || friendly(edge.edge_type)}${edge.tx_hash ? ` · ${edge.tx_hash}` : ""}`));
+  const occupied = [...state.positions.values()].map(point => ({x:point.x-110,y:point.y-46,width:220,height:92}));
+  $("#edges").replaceChildren(...state.viewEdges.map((edge) => {
+    const source = state.positions.get(edge.source), target = state.positions.get(edge.target), slot = slots.get(edge.id);
+    const candidate = edge.candidate, marker = candidate ? "purple" : edge.critical ? "green" : "amber";
+    const group = svgEl("g", { class: `edge-group${candidate ? " bridge-candidate" : ""}${edge.critical ? " critical" : ""}`, "data-edge-id": edge.id, "data-source": edge.source, "data-target": edge.target, "data-marker": marker, tabindex: 0, role: "button", "aria-label": `Inspeksi ${edge.members.length} transaksi: ${ForensicGraph.amountSummary(edge)}`, "aria-pressed": "false" });
+    const geometry = edgeGeometry(source, target, slot.index, slot.count);
+    const summary = `${candidate ? "KANDIDAT · " : ""}${ForensicGraph.amountSummary(edge)}`;
+    const labelWidth = Math.min(196, Math.max(88, summary.length * 5.1 + 16));
+    const {path,labelX,labelY} = placeEdgeLabel(geometry,labelWidth,occupied);
+    group.append(svgEl("path", { class: "edge-hit", d: path }), svgEl("path", { class: "graph-edge", d: path, "stroke-width": edge.width, "marker-end": `url(#arrow-${marker})` }));
+    const pill = svgEl("g", { class: "edge-pill" });
+    pill.append(svgEl("rect", { x: labelX - labelWidth / 2, y: labelY - 13, width: labelWidth, height: 22, rx: 8 }), svgEl("text", { class: "edge-label", x: labelX, y: labelY + 1 }, short(summary, 36)));
+    group.append(pill, svgEl("title", {}, `${summary}\nKlik untuk seluruh bukti transaksi; ketebalan relatif per aset, bukan valuasi lintas token.`));
     group.addEventListener("click", (event) => { if (!dragState.moved) { event.stopPropagation(); selectEdge(edge.id); } });
-    group.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectEdge(edge.id); } });
-    return group;
-  }).filter(Boolean);
-  $("#edges").replaceChildren(...edgeElements);
-  $("#nodes").replaceChildren(...state.viewNodes.map((node) => {
-    const { x, y } = state.positions.get(node.id);
-    const theme = nodeTheme(node);
-    const selected = node.id === state.selected;
-    const chain = chainInfo(node);
-    const initial = /INITIAL/i.test(node.node_type || "") || node.metadata?.is_initial_wallet;
-    const decision = decisionForNode(node);
-    const decisionTheme = decisionStyle(decision);
-    const group = svgEl("g", { class: `node${selected ? " selected" : ""}`, transform: `translate(${x} ${y})`, "data-node-id": node.id, tabindex: 0, role: "button", "aria-label": `${node.label}. ${friendly(node.node_type)}. Tampilkan detail.`, "aria-pressed": String(selected) });
-    group.append(svgEl("circle", { class: "node-orbit", r: initial ? 36 : 33, fill: "none", stroke: theme.color }));
-    group.append(svgEl("circle", { class: "node-core", r: initial ? 29 : 27, fill: theme.color, stroke: theme.color }));
-    if (node.node_zone === "ONCHAIN_WALLET" && chain?.icon) {
-      group.append(svgEl("image", { href: chain.icon, x: -13, y: -13, width: 26, height: 26, class: "network-node-icon", "clip-path": "url(#web3icon-round)", "aria-hidden": "true" }));
-    } else {
-      group.append(svgEl("text", { class: "network-node-icon", x: 0, y: 1 }, theme.icon));
-    }
-    group.append(svgEl("text", { class: "network-node-label", x: 0, y: 49 }, short(node.label, 18)));
-    const subtitle = node.address ? short(node.address, 19) : node.account ? short(node.account, 19) : node.asset && Number(node.crypto_amount) > 0 ? `${number(node.crypto_amount, 5)} ${node.asset}` : Number(node.amount_idr) > 0 ? compactIdr(node.amount_idr) : short(node.entity_label || friendly(node.node_type), 21);
-    group.append(svgEl("text", { class: "network-node-subtitle", x: 0, y: 64 }, subtitle));
-    const status = decision ? decisionTheme.short : initial ? `Wallet awal${chain ? ` · ${chain.badge}` : ""}` : isLiveRecord(node) ? `${chain?.badge || "Mainnet"} · belum teratribusi` : "Bukti sintetis";
-    group.append(svgEl("text", { class: "network-node-status", x: 0, y: 78 }, short(status, 28)));
-    group.append(svgEl("title", {}, `${node.label}\n${node.address || node.account || node.entity_label || ""}`));
-    group.addEventListener("click", (event) => { if (!dragState.moved) { event.stopPropagation(); selectNode(node.id); } });
-    group.addEventListener("keydown", (event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); selectNode(node.id); } });
+    group.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); selectEdge(edge.id); } });
     return group;
   }));
-  renderMinimap();
-  updateTransform();
-  highlightGraphSelection();
+  $("#nodes").replaceChildren(...state.viewNodes.map((node) => {
+    const {x,y} = state.positions.get(node.id), role = state.flowProjection.roles.get(node.id), hop = state.flowProjection.hops.get(node.id) || 0;
+    const badge = role === "target" ? (ForensicGraph.isExchange(node) ? "🎯 TARGET EXCHANGE / FREEZE" : "🎯 TARGET TINDAKAN / REVIEW") : role === "seed" ? "📍 WALLET AWAL (SEED)" : role === "bridge" ? "🌉 BRIDGE / DEX" : role === "source" ? "SUMBER / ORIGIN" : role === "cluster" ? "📦 DOMPET NILAI KECIL" : `PERANTARA (HOP ${hop})`;
+    const group = svgEl("g", { class: `node forensic-card role-${role}${node.id === state.selected ? " selected" : ""}`, transform: `translate(${x} ${y})`, "data-node-id": node.id, tabindex: 0, role: "button", "aria-label": `${node.label}. ${badge}. Tampilkan detail.`, "aria-pressed": String(node.id === state.selected) });
+    group.append(svgEl("rect", {class:"card-surface",x:-105,y:-42,width:210,height:84,rx:10}), svgEl("text",{class:"forensic-node-badge",x:-90,y:-25},badge));
+    group.append(svgEl("text",{class:"forensic-node-title",x:-90,y:-7},short(node.metadata?.public_entity?.label || node.label,26)));
+    const address = node.address || node.account || (role === "cluster" ? `${node.cluster_members.length} alamat · klik untuk daftar` : chainInfo(node)?.badge || friendly(node.node_type));
+    group.append(svgEl("text",{class:"forensic-node-address",x:-90,y:11},short(address,30)));
+    const inflow = nodeInflowEdges(node);
+    const amount = inflow.length ? ForensicGraph.amountSummary(inflow) : node.asset && Number(node.crypto_amount) > 0 ? `${number(node.crypto_amount,5)} ${node.asset}` : Number(node.amount_idr)>0 ? compactIdr(node.amount_idr) : `Hop ${hop} · ${role === "cluster" ? "ringkasan visual" : "sampel teramati"}`;
+    group.append(svgEl("text",{class:"forensic-node-amount",x:-90,y:29},short(amount,30)), svgEl("title",{},`${node.label}\n${node.address || node.account || ""}\n${amount}`));
+    group.addEventListener("click", event => { if (!dragState.moved) { event.stopPropagation(); selectNode(node.id); } });
+    group.addEventListener("keydown", event => { if (["Enter"," "].includes(event.key)) { event.preventDefault(); selectNode(node.id); } });
+    return group;
+  }));
+  renderMinimap(); updateTransform(); highlightGraphSelection();
   if ($("#graph-node-count")) $("#graph-node-count").textContent = String(state.viewNodes.length);
   if ($("#graph-edge-count")) $("#graph-edge-count").textContent = String(state.viewEdges.length);
-  renderTransactions();
+  if ($("#flow-focus-note")) $("#flow-focus-note").textContent = state.investigationView === "audit" ? "Audit menampilkan semua transaksi pada chain dan rentang waktu aktif, termasuk yang disembunyikan pada peta." : `${state.focusMainPath ? "Fokus aktif" : "Semua jalur"} · ${state.flowProjection.hiddenEdges.length} transfer kecil/spam difilter · ${state.flowProjection.clusterCount || 0} kelompok wallet. Bukti lengkap tetap di audit, inspector, dan ekspor. Ketebalan relatif per aset; bukan valuasi lintas token.`;
+  renderTransactions(); renderAuditTrail();
 }
 
 function compactIdr(value) {
@@ -760,19 +703,22 @@ function renderMinimap() {
 
 function highlightGraphSelection() {
   for (const group of document.querySelectorAll(".edge-group")) {
-    const related = group.dataset.edgeId === state.selectedEdge || Boolean(state.selected && [group.dataset.source, group.dataset.target].includes(state.selected));
+    const bundle = state.viewEdges.find(edge => edge.id === group.dataset.edgeId);
+    const related = group.dataset.edgeId === state.selectedEdge || Boolean(state.selectedEdge && bundle && graphMemberEdges(bundle).some(edge => edge.id === state.selectedEdge)) || Boolean(state.selected && [group.dataset.source, group.dataset.target].includes(state.selected));
     group.classList.toggle("related", related);
     group.querySelector(".graph-edge")?.setAttribute("marker-end", `url(#arrow-${related ? "green" : group.dataset.marker || "amber"})`);
   }
 }
 
 function updateTransform() {
+  const canvas = $("#graph-scroll"), svg = $("#graph"), height = Math.max(canvas.clientHeight, state.baseHeight * state.scale + Math.max(0,state.y));
+  svg.setAttribute("viewBox", `0 0 ${Math.max(300,canvas.clientWidth)} ${height}`); svg.style.height = `${height}px`; svg.style.width = "100%";
   $("#viewport").setAttribute("transform", `translate(${state.x} ${state.y}) scale(${state.scale})`);
   $("#zoom-level").textContent = `${Math.round(state.scale * 100)}%`;
   const windowRect = $("#minimap-window"), board = $("#graph-scroll");
   if (windowRect && board && state.scale > 0) {
-    const left = Math.max(0, Math.min(state.baseWidth, -state.x / state.scale)), top = Math.max(0, Math.min(state.baseHeight, -state.y / state.scale));
-    const right = Math.max(0, Math.min(state.baseWidth, (board.clientWidth - state.x) / state.scale)), bottom = Math.max(0, Math.min(state.baseHeight, (board.clientHeight - state.y) / state.scale));
+    const left = Math.max(0, Math.min(state.baseWidth, -state.x / state.scale)), top = Math.max(0, Math.min(state.baseHeight, (board.scrollTop - state.y) / state.scale));
+    const right = Math.max(0, Math.min(state.baseWidth, (board.clientWidth - state.x) / state.scale)), bottom = Math.max(0, Math.min(state.baseHeight, (board.scrollTop + board.clientHeight - state.y) / state.scale));
     windowRect.setAttribute("x", left); windowRect.setAttribute("y", top);
     windowRect.setAttribute("width", Math.max(0, right - left)); windowRect.setAttribute("height", Math.max(0, bottom - top));
     windowRect.style.visibility = right > left && bottom > top ? "visible" : "hidden";
@@ -785,9 +731,9 @@ function resetView() {
 
 function fitGraph() {
   const board = $("#graph-scroll");
-  state.scale = Math.max(.01, Math.min(1, (board.clientWidth - 20) / state.baseWidth, (board.clientHeight - 15) / state.baseHeight));
+  state.scale = Math.max(.01, Math.min(1, (board.clientWidth - 20) / state.baseWidth));
   state.x = (board.clientWidth - state.baseWidth * state.scale) / 2;
-  state.y = Math.max(0, (board.clientHeight - state.baseHeight * state.scale) / 2);
+  state.y = 0;
   board.scrollTop = 0;
   board.scrollLeft = 0;
   updateTransform();
@@ -837,10 +783,112 @@ function addDetail(list, label, value, className = "") {
   list.append(row);
 }
 
+function graphMemberEdges(edge) {
+  const byId = new Map((state.graph?.edges || []).map(item => [item.id, item])), items = new Map();
+  for (const member of edge.members || [edge]) {
+    const ids = member.metadata?.collapsed_api_steps;
+    if (ids?.length) { for (const id of ids) if (byId.has(id)) items.set(id, byId.get(id)); }
+    else items.set(member.id, byId.get(member.id) || member);
+  }
+  return [...items.values()];
+}
+
+function nodeInflowEdges(node) {
+  const targets = new Set((node.cluster_members || [node]).map(member => member.id));
+  return transactionRows(state.graph, state.chainFilter || "ALL", "", state.timeRange || "ALL").filter(edge => targets.has(edge.target));
+}
+
+function auditTrailRows(graph) {
+  if (!graph) return [];
+  const edges = transactionRows(graph, state.chainFilter || "ALL", "", state.timeRange || "ALL");
+  const view = ForensicGraph.project({ ...graph, edges }, { focus: false });
+  const byId = new Map(graph.nodes.map(node => [node.id, node]));
+  return edges.map(edge => ({ edge, source: byId.get(edge.source), target: byId.get(edge.target),
+    hop: view.hops.get(edge.source) || 0, targetHop: view.hops.get(edge.target) || 0,
+    sourceRole: view.roles.get(edge.source), attributed: ForensicGraph.isExchange(byId.get(edge.target) || {}) }))
+    .sort((a,b) => Number(b.sourceRole === "source") - Number(a.sourceRole === "source") || a.hop - b.hop || String(a.edge.timestamp || "").localeCompare(String(b.edge.timestamp || "")) || String(a.edge.id).localeCompare(String(b.edge.id)));
+}
+
+function renderTransferItems(edges) {
+  const section = el("details", "technical-details transfer-items");
+  section.open = true;
+  section.append(el("summary", "", `${edges.length} transaksi / relasi · rincian asli`));
+  const list = el("div", "cluster-list");
+  for (const edge of edges) {
+    const item = el("div", "transfer-item");
+    item.append(el("strong", "", edge.asset && edge.crypto_amount != null ? `${number(edge.crypto_amount, 12)} ${edge.asset}` : edge.amount_idr != null ? idr(edge.amount_idr) : edge.label || friendly(edge.edge_type)));
+    item.append(el("small", "", `${edge.chain || edge.metadata?.chain || "Fiat / ledger"} · ${isCandidateEdge(edge) ? "KANDIDAT · belum terverifikasi" : isLiveRecord(edge) ? "Mainnet · atribusi belum terbukti" : "Bukti sintetis"}`));
+    if (edge.tx_hash) item.append(el("code", "", edge.tx_hash));
+    if (edge.metadata?.token_contract || edge.metadata?.contract_address) item.append(el("small", "", `Kontrak: ${edge.metadata.token_contract || edge.metadata.contract_address}`));
+    if (edge.timestamp) item.append(el("small", "", dateTime(edge.timestamp)));
+    const button = el("button", "transaction-detail", "Inspeksi transaksi"); button.type = "button";
+    button.addEventListener("click", () => selectEdge(edge.id)); item.append(button); list.append(item);
+  }
+  section.append(list); return section;
+}
+
+function renderBundleInspector(bundle) {
+  const inspector = $("#inspector"), members = graphMemberEdges(bundle), byId = new Map(state.viewNodes.map(node => [node.id, node]));
+  const details = el("dl", "detail-list");
+  addDetail(details, "Dari", byId.get(bundle.source)?.label || bundle.source);
+  addDetail(details, "Ke", byId.get(bundle.target)?.label || bundle.target);
+  addDetail(details, "Jumlah bukti", `${members.length} transaksi / relasi asli`);
+  addDetail(details, "Ringkasan aset utama", ForensicGraph.amountSummary(bundle));
+  addDetail(details, "Status hubungan", bundle.candidate ? "KANDIDAT · mencakup hubungan yang belum terverifikasi" : "Relasi pada bukti teramati; bukan bukti kepemilikan atau dana laporan");
+  inspector.replaceChildren(el("div", "inspector-type", "ALUR TERAGREGASI"), el("h3", "", ForensicGraph.amountSummary(bundle)), details,
+    el("p", "scope-note", "Satu panah merangkum relasi searah. Jumlah aset berbeda tidak digabung sebagai satu nilai uang. Rincian asli, termasuk langkah PAKD yang diringkas, tersedia di bawah."), renderTransferItems(members));
+}
+
+function renderClusterInspector(node) {
+  const inspector = $("#inspector"), list = el("div", "cluster-list");
+  for (const member of node.cluster_members) {
+    const button = el("button", "audit-action", member.metadata?.public_entity?.label || member.label || member.address || member.id);
+    button.type = "button"; button.append(el("small", "", member.address || member.account || member.id));
+    button.addEventListener("click", () => selectNode(member.id)); list.append(button);
+  }
+  inspector.replaceChildren(el("div", "inspector-type", "RINGKASAN VISUAL"), el("h3", "", `${node.cluster_members.length} dompet nilai kecil lainnya`),
+    el("p", "scope-note", "Pilih alamat untuk memeriksa semua transaksi aslinya. Pengelompokan ini tidak menyatakan pemilik yang sama."), list);
+}
+
+function renderAuditTrail() {
+  const body = $("#audit-trail-body"); if (!body) return;
+  const rows = auditTrailRows(state.graph), contents = []; let previous = null;
+  for (const row of rows) {
+    const label = row.sourceRole === "source" ? "Sumber / Origin" : `Hop ${row.hop}`;
+    if (label !== previous) { const header = el("tr", "audit-hop-heading"), cell = el("td", "", label); cell.colSpan = 5; header.append(cell); contents.push(header); previous = label; }
+    const tr = el("tr"), route = el("td"), value = el("td"), attribution = el("td"), actions = el("td", "audit-actions");
+    route.append(el("strong", "", `${row.source?.metadata?.public_entity?.label || row.source?.label || row.edge.source} → ${row.target?.metadata?.public_entity?.label || row.target?.label || row.edge.target}`));
+    route.append(el("small", "", `${short(row.source?.address || row.source?.account || row.edge.source,25)} → ${short(row.target?.address || row.target?.account || row.edge.target,25)}`));
+    value.append(el("strong", "", row.edge.asset && row.edge.crypto_amount != null ? `${number(row.edge.crypto_amount,12)} ${row.edge.asset}` : row.edge.amount_idr != null ? idr(row.edge.amount_idr) : "—"));
+    value.append(el("small", "", row.edge.chain || row.edge.metadata?.chain || "Fiat / ledger"));
+    if (row.edge.timestamp) value.append(el("small", "", dateTime(row.edge.timestamp)));
+    const candidate = isCandidateEdge(row.edge);
+    attribution.append(el("span", `audit-entity-badge${row.attributed ? " target" : ""}`, candidate ? "Kandidat · belum terverifikasi" : row.target?.node_zone === "FIAT_BANK" ? "Rekening pada bukti" : row.attributed ? "Exchange teridentifikasi" : "Dompet belum teratribusi"));
+    attribution.append(el("small", "", isLiveRecord(row.edge) ? "Label publik · pemilik belum diverifikasi" : "Skenario sintetis"));
+    const inspect = el("button", "audit-action", "Inspeksi"); inspect.type = "button";
+    inspect.addEventListener("click", () => { selectEdge(row.edge.id); $(".right-panel").scrollIntoView({block:"nearest",behavior:"smooth"}); }); actions.append(inspect);
+    const request = (state.graph.governance_requests || []).find(item => item.target_node_id === row.edge.target);
+    if (request) { const freeze = el("button", "audit-action", "Tinjau rekomendasi freeze"); freeze.type = "button";
+      freeze.addEventListener("click", () => { selectNode(row.edge.target); state.selectedRequestId = request.request_id; renderActions(); $("#action-list").scrollIntoView({block:"nearest",behavior:"smooth"}); }); actions.append(freeze); }
+    tr.append(el("td", "", `${row.sourceRole === "source" ? "Origin" : row.hop} → ${row.targetHop}`),route,value,attribution,actions); contents.push(tr);
+  }
+  body.replaceChildren(...contents); if ($("#audit-trail-empty")) $("#audit-trail-empty").hidden = rows.length > 0;
+}
+
+function setInvestigationView(view) {
+  state.investigationView = view; stopAnimation();
+  const audit = view === "audit";
+  $("#flow-graph-view").hidden = audit; $("#audit-trail-view").hidden = !audit;
+  $("#flow-view-button").setAttribute("aria-pressed", String(!audit)); $("#audit-view-button").setAttribute("aria-pressed", String(audit));
+  $("#fit-button").disabled = audit; $("#focus-main-path").disabled = audit;
+  if (state.graph) { if (audit) { renderAuditTrail(); $("#flow-focus-note").textContent = "Audit menampilkan semua transaksi pada chain dan rentang waktu aktif, termasuk yang disembunyikan pada peta."; } else { renderGraph(); fitGraph(); } }
+}
+
 function renderInspector() {
   renderRiskAssessment();
   const inspector = $("#inspector");
   const edge = state.viewEdges.find((candidate) => candidate.id === state.selectedEdge) || state.graph?.edges.find((candidate) => candidate.id === state.selectedEdge);
+  if (edge?.members) { renderBundleInspector(edge); return; }
   if (edge) {
     const details = el("dl", "detail-list");
     addDetail(details, "Jaringan", `${edge.chain || edge.metadata?.chain || "—"}${edge.chain_id ? ` [${edge.chain_id}]` : ""}`);
@@ -872,13 +920,14 @@ function renderInspector() {
     }
     return;
   }
-  const node = state.graph?.nodes.find((candidate) => candidate.id === state.selected);
+  const node = state.graph?.nodes.find((candidate) => candidate.id === state.selected) || state.viewNodes.find((candidate) => candidate.id === state.selected);
   if (!node) {
     const empty = el("div", "inspector-empty");
     empty.append(el("span", "", "⌖"), el("h3", "", "Inspeksi simpul"), el("p", "", "Pilih rekening, escrow, atau wallet pada grafik untuk melihat bukti."));
     inspector.replaceChildren(empty);
     return;
   }
+  if (node.cluster_members) { renderClusterInspector(node); return; }
   const theme = nodeTheme(node);
   const type = el("div", "inspector-type", friendly(node.node_type || node.node_zone));
   type.style.color = theme.color;
@@ -945,6 +994,8 @@ function renderInspector() {
     addDetail(extra, "Nominal disetujui institusi", idr(decision.approved_frozen_amount_idr));
   }
   inspector.replaceChildren(type, heading, entity, status, details);
+  const transfers = state.graph.edges.filter(edge => edge.source === node.id || edge.target === node.id);
+  if (transfers.length) inspector.append(renderTransferItems(transfers));
   if (extra.children.length) inspector.append(technicalDetails);
   if (isLiveRecord(node)) {
     const ownTx = node.metadata?.tx_hash;
@@ -1208,7 +1259,8 @@ async function animate() {
   if (!state.graph) return;
   if ($("#animate-button").dataset.running === "true") { stopAnimation(); return; }
   const token = ++state.animation;
-  const hops = new Map(state.graph.nodes.map((node) => [node.id, Number(node.hop || 0)]));
+  if (state.investigationView === "audit") setInvestigationView("flow");
+  const hops = state.flowProjection.hops;
   const edges = [...state.viewEdges].sort((a, b) => (hops.get(a.source) || 0) - (hops.get(b.source) || 0) || (new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()));
   if (!edges.length) { toast("Belum ada transfer untuk dianimasikan."); return; }
   $("#animate-button").dataset.running = "true";
@@ -1222,7 +1274,7 @@ async function animate() {
     const edge = edges[index];
     for (const group of document.querySelectorAll(".edge-group")) if (group.dataset.edgeId === edge.id) { group.classList.remove("dimmed"); group.classList.add("active"); }
     for (const group of document.querySelectorAll(".node")) if ([edge.source, edge.target].includes(group.dataset.nodeId)) group.classList.remove("dimmed");
-    $("#animation-step").textContent = `${String(index + 1).padStart(2, "0")} / ${edges.length} · ${friendly(edge.edge_type)}`;
+    $("#animation-step").textContent = `${String(index + 1).padStart(2, "0")} / ${edges.length} · ${ForensicGraph.amountSummary(edge)}`;
     selectNode(edge.target);
     const position = state.positions.get(edge.target);
     if (position) $("#graph-scroll").scrollTo({ top: Math.max(0, position.y * state.scale + state.y - $("#graph-scroll").clientHeight / 2), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
@@ -1339,6 +1391,13 @@ $("#manual-button").addEventListener("click", () => {
 $("#zoom-in").addEventListener("click", () => zoom(1.2));
 $("#zoom-out").addEventListener("click", () => zoom(1 / 1.2));
 $("#fit-button").addEventListener("click", fitGraph);
+$("#graph-scroll").addEventListener("scroll", updateTransform, { passive: true });
+$("#flow-view-button").addEventListener("click", () => setInvestigationView("flow"));
+$("#audit-view-button").addEventListener("click", () => setInvestigationView("audit"));
+$("#focus-main-path").addEventListener("change", (event) => {
+  state.focusMainPath = event.target.checked; stopAnimation();
+  if (state.graph) { renderGraph(); fitGraph(); renderInspector(); }
+});
 $("#animate-button").addEventListener("click", animate);
 $("#sidebar-animate-button").addEventListener("click", animate);
 $("#run-scenario-button").addEventListener("click", trace);
@@ -1378,7 +1437,7 @@ let graphResizeTimer;
 new ResizeObserver(() => {
   clearTimeout(graphResizeTimer);
   graphResizeTimer = setTimeout(() => {
-    if (!state.graph || Math.abs(Math.max(300, $("#graph-scroll").clientWidth) - state.viewportWidth) < 2 && Math.abs(($("#graph-scroll").clientHeight || 500) - state.viewportHeight) < 2) return;
+    if (state.investigationView === "audit" || !state.graph || Math.abs(Math.max(300, $("#graph-scroll").clientWidth) - state.viewportWidth) < 2 && Math.abs(($("#graph-scroll").clientHeight || 500) - state.viewportHeight) < 2) return;
     stopAnimation();
     renderGraph();
     resetView();

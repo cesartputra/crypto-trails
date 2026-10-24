@@ -5,7 +5,7 @@ const vm = require('node:vm');
 const assert = require('node:assert/strict');
 const source = readFileSync(resolve(__dirname, '../static/app.js'), 'utf8');
 const html = readFileSync(resolve(__dirname, '../static/index.html'), 'utf8');
-const state = { chainFilter: 'ALL', positions: new Map() };
+const state = { chainFilter: 'ALL', focusMainPath: false, positions: new Map() };
 const ui = new Map();
 function element() { return { children: [], attributes: {}, style: {}, clientWidth: 1000, clientHeight: 650,
   setAttribute(key, value) { this.attributes[key] = value; }, append(...nodes) { this.children.push(...nodes); },
@@ -19,7 +19,9 @@ const caseChains = source.slice(source.indexOf('function caseChains('), source.i
 const transferChecks = source.slice(source.indexOf('function isCandidateEdge('), source.indexOf('function explorerLink('));
 const liveChecks = source.slice(source.indexOf('function isLiveRecord('), source.indexOf('const chains ='));
 const layout = source.slice(source.indexOf('function visibleGraph('), source.indexOf('function edgeGeometry('));
-vm.createContext(context); vm.runInContext(`${chainSource}\n${liveChecks}\n${transferChecks}\n${explorerSource}\n${caseChains}\n${layout}`, context);
+vm.createContext(context);
+vm.runInContext(readFileSync(resolve(__dirname, '../static/forensic_graph.js'), 'utf8'), context);
+vm.runInContext(`${chainSource}\n${liveChecks}\n${transferChecks}\n${explorerSource}\n${caseChains}\n${layout}`, context);
 const node = (id, hop, type, zone, chain) => ({ id, hop, node_type: type, node_zone: zone, chain, metadata: {} });
 state.graph = { nodes: [node('victim', 0, 'VICTIM', 'FIAT_BANK'), node('va', 1, 'PAKD_VA', 'CRYPTO_EXCHANGE_BRIDGE'),
   node('deposit', 2, 'PAKD_FIAT_DEPOSIT', 'CRYPTO_EXCHANGE_BRIDGE'), node('conversion', 3, 'PAKD_CRYPTO_CONVERSION', 'CRYPTO_EXCHANGE_BRIDGE'), node('user', 4, 'PAKD_USER_ACCOUNT', 'CRYPTO_EXCHANGE_BRIDGE'),

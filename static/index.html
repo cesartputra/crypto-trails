@@ -6,8 +6,9 @@
   <meta name="theme-color" content="#f5f4f0">
   <title>Crypto Trails · Intelligence Workspace</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%2325241f'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='2'%3E%3Ccircle cx='12' cy='11' r='4'/%3E%3Ccircle cx='29' cy='15' r='4'/%3E%3Ccircle cx='14' cy='30' r='4'/%3E%3Cpath d='m16 12 9 2M13 15l1 11m4 2 8-10'/%3E%3C/g%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/static/styles.css?v=20261024-graph5">
-  <script src="/static/app.js?v=20261024-graph5" defer></script>
+  <link rel="stylesheet" href="/static/styles.css?v=20261024-forensic3">
+  <script src="/static/forensic_graph.js?v=20261024-forensic3" defer></script>
+  <script src="/static/app.js?v=20261024-forensic3" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -95,7 +96,7 @@
 
       <div class="workspace">
         <section class="graph-panel panel" aria-labelledby="graph-title">
-          <div class="graph-header"><div><h2 id="graph-title">Alur dana</h2><p>Keterkaitan sumber dana, rekening, PAKD, dan wallet</p></div><div class="graph-header-actions"><button id="fit-button" class="button secondary" type="button" title="Pas-kan seluruh grafik" aria-label="Pas-kan seluruh grafik"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11a9 9 0 1 0 3-6M3 3v6h6"/></svg>Reset</button></div></div>
+          <div class="graph-header"><div><h2 id="graph-title">Alur dana</h2><p>Keterkaitan sumber dana, rekening, PAKD, dan wallet</p></div><div class="graph-header-actions"><button id="fit-button" class="button secondary" type="button" title="Fit to Screen · Pas-kan seluruh grafik" aria-label="Fit to Screen · Pas-kan seluruh grafik"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11a9 9 0 1 0 3-6M3 3v6h6"/></svg>Fit to Screen</button></div></div>
         <div id="chain-filters" class="chain-filters" role="group" aria-label="Filter jalur blockchain"></div>
 
           <details class="case-context"><summary>Ringkasan kasus & jalur blockchain</summary>
@@ -108,10 +109,20 @@
           <span><i class="purple"></i><b>ZONA 3 · Multichain & Bridge</b><small>Scanner utama → Crypto APIs / fixture demo</small></span>
         </div>
           </details>
+        <div class="forensic-view-controls">
+          <div class="forensic-view-switcher" role="group" aria-label="Tampilan jejak investigasi">
+            <button id="flow-view-button" type="button" aria-pressed="true" aria-controls="flow-graph-view"><span aria-hidden="true">🗺️</span> Peta Alur Dana <small>Clean Flow Graph</small></button>
+            <button id="audit-view-button" type="button" aria-pressed="false" aria-controls="audit-trail-view"><span aria-hidden="true">📑</span> Urutan Jejak Hop-by-Hop <small>Audit Trail Table</small></button>
+          </div>
+          <label class="flow-focus-control" for="focus-main-path"><input id="focus-main-path" type="checkbox" checked> <span>Fokus Jalur Utama (Sembunyikan Spam/Micro Tx)</span></label>
+          <small id="flow-focus-note" class="flow-focus-note" role="status" aria-live="polite">Jalur utama diprioritaskan; bukti lengkap tetap tersedia melalui inspeksi.</small>
+          <p class="flow-layout-note">Fit to Screen menyesuaikan lebar. Gulir vertikal untuk jejak panjang.</p>
+        </div>
+        <div id="flow-graph-view" class="flow-graph-view">
         <div id="graph-board" class="graph-board">
           <div class="network-status" aria-live="polite"><span><strong id="graph-node-count">0</strong> simpul</span><i></i><span><strong id="graph-edge-count">0</strong> relasi</span></div>
           <div id="graph-scroll" class="graph-scroll">
-          <svg id="graph" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 650" role="group" aria-label="Grafik interaktif aliran dana. Pilih simpul untuk memeriksa bukti."><defs><marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#438bf0"/></marker><marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#edb256"/></marker><marker id="arrow-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#57d8ef"/></marker><marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#a48af5"/></marker><marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#58b789"/></marker><clipPath id="web3icon-round" clipPathUnits="objectBoundingBox"><circle cx=".5" cy=".5" r=".5"/></clipPath></defs><g id="viewport"><g id="swimlanes"></g><g id="edges"></g><g id="nodes"></g></g></svg>
+          <svg id="graph" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1160 650" role="group" aria-label="Grafik interaktif aliran dana. Pilih simpul untuk memeriksa bukti."><defs><marker id="arrow-blue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#438bf0"/></marker><marker id="arrow-amber" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#edb256"/></marker><marker id="arrow-cyan" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#57d8ef"/></marker><marker id="arrow-purple" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#a48af5"/></marker><marker id="arrow-green" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="9" markerHeight="9" markerUnits="userSpaceOnUse" orient="auto-start-reverse"><path d="M0 0 L10 5 L0 10Z" fill="#58b789"/></marker><clipPath id="web3icon-round" clipPathUnits="objectBoundingBox"><circle cx=".5" cy=".5" r=".5"/></clipPath></defs><g id="viewport"><g id="swimlanes"></g><g id="edges"></g><g id="nodes"></g></g></svg>
           </div>
           <div id="graph-loading" class="graph-loading"><div class="loading-orbit"></div><strong>Menyusun jejak aliran dana</strong><span>Mencocokkan handoff FNA dengan Mirror DB dan on-chain…</span></div>
           <div id="graph-empty" class="graph-empty" hidden><strong>Tidak ada simpul pada filter ini</strong><span>Pilih chain atau rentang lain untuk melihat data trace.</span></div>
@@ -120,7 +131,18 @@
           <div class="zoom-controls"><button id="zoom-out" aria-label="Perkecil grafik">−</button><span id="zoom-level">100%</span><button id="zoom-in" aria-label="Perbesar grafik">+</button></div>
           <div id="animation-step" class="animation-step" hidden></div>
         </div>
-        <div class="graph-footer"><div class="legend network-legend" aria-label="Warna menunjukkan jenis entitas"><span><i class="entity-source"></i> Sumber dana</span><span><i class="entity-bank"></i> PUJK / rekening</span><span><i class="entity-pakd"></i> PAKD</span><span><i class="entity-wallet"></i> Wallet / transaksi</span><span><i class="entity-selected"></i> Relasi terpilih</span></div><button id="animate-button" class="button subtle"><span>▷</span> Animasi aliran dana</button></div>
+        <div class="graph-footer"><div class="legend network-legend" aria-label="Warna menunjukkan peran entitas"><span><i class="entity-source" aria-hidden="true"></i> Sumber dana</span><span><i class="entity-seed" aria-hidden="true"></i> Wallet awal</span><span><i class="entity-bridge" aria-hidden="true"></i> Bridge / DEX</span><span><i class="entity-target" aria-hidden="true"></i> Target exchange / PAKD</span><span><i class="entity-wallet" aria-hidden="true"></i> Wallet lainnya</span></div><button id="animate-button" class="button subtle"><span>▷</span> Animasi aliran dana</button></div>
+        </div>
+        <section id="audit-trail-view" class="audit-trail-view" aria-label="Urutan jejak hop-by-hop" hidden>
+          <div class="audit-table-scroll" tabindex="0" role="region" aria-label="Tabel audit jejak dana; gulir untuk melihat seluruh kolom">
+            <table class="audit-table">
+              <caption>Urutan aliran dana per hop. Pilih inspeksi untuk melihat bukti dan tindak lanjut.</caption>
+              <thead><tr><th scope="col">Hop</th><th scope="col">Sumber → Tujuan</th><th scope="col">Chain &amp; Nilai</th><th scope="col">Atribusi</th><th scope="col">Tindakan</th></tr></thead>
+              <tbody id="audit-trail-body"></tbody>
+            </table>
+          </div>
+          <p id="audit-trail-empty" class="transaction-empty" hidden>Tidak ada aliran dana pada filter ini.</p>
+        </section>
         <div id="warnings" class="warnings" hidden></div>
         </section>
       <aside class="right-panel panel">
