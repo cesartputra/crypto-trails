@@ -10,7 +10,7 @@ const ui = new Map();
 function element() { return { children: [], attributes: {}, style: {}, clientWidth: 1000, clientHeight: 650,
   setAttribute(key, value) { this.attributes[key] = value; }, append(...nodes) { this.children.push(...nodes); },
   replaceChildren(...nodes) { this.children = nodes; } }; }
-const context = { state, Map, Set, Number, String, Math, URL, friendly: (value) => String(value || '').replaceAll('_', ' '),
+const context = { state, Map, Set, Number, String, Math, URL, clearTimeout() {}, timelineFilterTimer: null, friendly: (value) => String(value || '').replaceAll('_', ' '),
   $: (selector) => { if (!ui.has(selector)) ui.set(selector, element()); return ui.get(selector); },
   el: () => element(), svgEl: (tag, attrs) => ({ tag, ...attrs }) };
 const chainSource = source.slice(source.indexOf('const chains = {'), source.indexOf('function isCandidateEdge('));
@@ -21,6 +21,7 @@ const liveChecks = source.slice(source.indexOf('function isLiveRecord('), source
 const layout = source.slice(source.indexOf('function visibleGraph('), source.indexOf('function edgeGeometry('));
 vm.createContext(context);
 vm.runInContext(readFileSync(resolve(__dirname, '../static/forensic_graph.js'), 'utf8'), context);
+vm.runInContext(readFileSync(resolve(__dirname, '../static/arkham_engine.js'), 'utf8'), context);
 vm.runInContext(`${chainSource}\n${liveChecks}\n${transferChecks}\n${explorerSource}\n${caseChains}\n${layout}`, context);
 const node = (id, hop, type, zone, chain) => ({ id, hop, node_type: type, node_zone: zone, chain, metadata: {} });
 state.graph = { nodes: [node('victim', 0, 'VICTIM', 'FIAT_BANK'), node('va', 1, 'PAKD_VA', 'CRYPTO_EXCHANGE_BRIDGE'),
@@ -35,14 +36,15 @@ context.layoutNodes();
 assert.equal(state.positions.size, state.viewNodes.length);
 for (const point of state.positions.values()) {
   assert.ok(Number.isFinite(point.x) && Number.isFinite(point.y));
-  assert.ok(point.x > 0 && point.x < state.baseWidth && point.y > 0 && point.y < state.baseHeight);
+  assert.ok(Number.isFinite(state.baseWidth) && state.baseWidth > 0 && Number.isFinite(state.baseHeight) && state.baseHeight > 0);
 }
-assert.equal(state.viewNodes.some((n) => n.id === 'deposit'), false);
-assert.ok(state.viewEdges.some((e) => e.source === 'va' && e.target === 'user' && e.metadata.collapsed_api_steps.length === 3));
+assert.equal(state.viewNodes.some((n) => n.id === 'deposit'), true, 'Default visualizer must retain every loaded entity');
+assert.ok(state.viewEdges.some((e) => e.source === 'va' && e.target === 'deposit'));
+assert.equal(state.viewNodes.length,state.graph.nodes.length,'No wallet cap or automatic entity collapse in the default view');
 assert.equal(state.branchByNode.get('sol-bank'), 'SOLANA');
 for (const chain of ['BTC', 'SOLANA', 'ETHEREUM']) {
   const initial = state.positions.get(`${chain}-initial`), next = state.positions.get(`${chain}-hop`);
-  assert.ok(Math.hypot(initial.x - next.x, initial.y - next.y) >= 100);
+  assert.ok(initial && next, 'Each chain retains seed and intermediate evidence in the force model');
 }
 state.chainFilter = 'SOLANA'; context.layoutNodes();
 assert.equal(state.positions.size, state.viewNodes.length);

@@ -76,5 +76,7 @@ const scoped = context.visibleGraph();
 assert.deepEqual(Array.from(scoped.nodes, node => node.id), ['eth-wallet', 'eth-recipient'], 'Date filtering must preserve branch identity from older parent evidence');
 assert.deepEqual(Array.from(context.transactionRows(branched, 'ETHEREUM', '', '7'), edge => edge.id), ['eth-recent'], 'Fiat cash-out retains the full trace blockchain branch in the table');
 assert.equal(JSON.stringify(branched), branchedBefore, 'Branch projection must not mutate evidence');
+context.state = {graph:{simulation:true,nodes:[{id:'seed',metadata:{is_seed_wallet:true}},{id:'recent'},{id:'hidden-pakd',node_type:'PAKD_FIAT_DEPOSIT'}],edges:[{id:'recent',source:'seed',target:'recent',timestamp:'2024-01-30T00:00:00Z'},{id:'old',source:'hidden-pakd',target:'seed',timestamp:'2024-01-01T00:00:00Z'}]},chainFilter:'ALL',timeRange:'7',focalId:'hidden-pakd'};
+assert.ok(context.visibleGraph().nodes.some(node=>node.id==='hidden-pakd'),'A searched focal remains visible even when its records fall outside the active time range');
 assert.ok(source.includes('matches.slice(0, 50)'), 'Transaction table must keep its visible row cap');
 console.log('PASS: transaction search, chain/time scopes, date boundaries, fixture-only risk indicators and immutable evidence.');

@@ -2,7 +2,7 @@
 
 const $ = (selector) => document.querySelector(selector);
 const NS = "http://www.w3.org/2000/svg";
-const state = { scenarios: [], scenarioId: null, graph: null, selected: null, selectedEdge: null, mode: "scenario", positions: new Map(), scale: 1, x: 0, y: 0, animation: 0, request: 0, packets: new Map(), busyRequests: new Set(), selectedRequestId: null, decisionDrafts: new Map(), logs: [], baseWidth: 1160, baseHeight: 650, viewportWidth: 0, viewportHeight: 0, chainFilter: "ALL", timeRange: "ALL", viewNodes: [], viewEdges: [], branchByNode: new Map(), lanes: [], currentStep: 3, focusMainPath: true, investigationView: "flow", flowProjection: null };
+const state = { scenarios: [], scenarioId: null, graph: null, selected: null, selectedEdge: null, mode: "scenario", positions: new Map(), scale: 1, x: 0, y: 0, animation: 0, request: 0, packets: new Map(), busyRequests: new Set(), selectedRequestId: null, decisionDrafts: new Map(), logs: [], baseWidth: 1160, baseHeight: 650, viewportWidth: 0, viewportHeight: 0, chainFilter: "ALL", timeRange: "ALL", viewNodes: [], viewEdges: [], branchByNode: new Map(), lanes: [], currentStep: 3, focusMainPath: false, investigationView: "flow", flowProjection: null, focalId: null, pins: new Map(), graphEngine: null, layoutModel: null, physicsFrozen: false, flowMode: "ALL", groupMode: "CHAIN", timelineRange: null, sortTime: true, zoomBehavior: null, usingD3: false };
 const idr = (value) => new Intl.NumberFormat("id-ID", { style: "currency", currency: "IDR", minimumFractionDigits: 0, maximumFractionDigits: 2 }).format(Number(value || 0));
 const number = (value, digits = 2) => new Intl.NumberFormat("id-ID", { maximumFractionDigits: digits }).format(Number(value || 0));
 const short = (value, size = 20) => String(value || "").length > size ? `${String(value).slice(0, size - 2)}…` : String(value || "");
@@ -111,7 +111,14 @@ function setMode(mode) {
 function beginTrace(live = false) {
   const requestId = ++state.request;
   stopAnimation();
+  clearTimeout(timelineFilterTimer);
+  state.graphEngine?.stop(); state.graphEngine = null; state.focalId = null; state.pins = new Map(); state.timelineRange = null;
+  if ($("#inspector-drawer")) $("#inspector-drawer").hidden = true;
+  $("#entity-search").value=""; $("#entity-search-results").replaceChildren(); $("#entity-search-results").hidden=true; $("#graph-tooltip").hidden=true;
+  $("#activity-timeline").replaceChildren(); $("#focal-pill-label").textContent="No active trace"; $("#visualizer-status").textContent="Waiting for evidence";
+  $("#timeline-range-label").textContent="No active trace"; $("#timeline-start").disabled=$("#timeline-end").disabled=true;
   state.graph = null;
+  state.positions = new Map(); state.layoutModel = null;
   state.flowProjection = null; state.viewNodes = []; state.viewEdges = [];
   $("#audit-trail-body")?.replaceChildren();
   if ($("#audit-trail-empty")) $("#audit-trail-empty").hidden = false;
@@ -159,13 +166,12 @@ function beginTrace(live = false) {
 
 function acceptGraph(graph) {
   state.graph = graph;
+  if ((graph.chain_dispersals || []).length > 1) state.focalId = graph.nodes.find(node=>node.node_type === "PAKD_USER_ACCOUNT")?.id || null;
   state.currentStep = 3;
   renderCaseSummary(); renderStepper();
   renderMetrics(); renderGraph(); resetView(); renderEvidence(); renderPakd(); renderActions();
-  const firstRequest = (graph.governance_requests || []).find((request) => request.institution_category === "PUJK" && Number(request.requested_amount_idr) > 0) || (graph.governance_requests || []).find((request) => Number(request.requested_amount_idr) > 0) || (graph.governance_requests || [])[0];
-  if (firstRequest) selectNode(firstRequest.target_node_id);
-  else if (graph.nodes.length) selectNode(graph.nodes.find((node) => node.metadata?.is_seed_wallet || node.metadata?.is_initial_wallet || /SEED|INITIAL/.test(node.node_type))?.id || graph.nodes[0].id);
-  else renderInspector();
+  state.initialFocalId = state.focalId;
+  renderInspector();
   const live = graph.simulation === false;
   log(`${graph.nodes.length} simpul dan ${graph.edges.length} relasi terhubung. ${live ? "Data on-chain mainnet asli; atribusi dana laporan belum terbukti." : "Sumber: snapshot FNA, REST API PAKD, dan on-chain sintetis."}`);
   if (graph.p2p_detections?.length) log(`${graph.p2p_detections.length} kecocokan escrow P2P ditemukan pada fixture.`);
@@ -535,30 +541,13 @@ function decisionStyle(decision) {
 }
 
 function visibleGraph() {
-  const filtered = state.timeRange && state.timeRange !== "ALL" ? timeFilteredEdges(state.graph, state.timeRange) : state.graph.edges;
-  const connected = new Set(filtered.flatMap((edge) => [edge.source, edge.target]));
-  const graph = filtered === state.graph.edges ? state.graph : { ...state.graph, edges: filtered,
-    nodes: state.graph.nodes.filter((node) => connected.has(node.id) || node.metadata?.is_seed_wallet || node.metadata?.is_initial_wallet || /SEED|INITIAL/.test(node.node_type)) };
+  const filtered = state.timeRange && state.timeRange !== "ALL" ? timeFilteredEdges(state.graph,state.timeRange) : state.graph.edges;
+  const connected = new Set(filtered.flatMap(edge=>[edge.source,edge.target]));
   const branches = graphBranches(state.graph);
-  const requestTargets = new Set((graph.governance_requests || []).map((request) => request.target_node_id));
-  const hidden = new Set(graph.nodes.filter((node) => /^(PAKD_FIAT_DEPOSIT|PAKD_CRYPTO_CONVERSION)$/.test(node.node_type) && !requestTargets.has(node.id)).map((node) => node.id));
-  const visible = graph.nodes.filter((node) => !hidden.has(node.id) && (state.chainFilter === "ALL" || !branches.get(node.id) || branches.get(node.id) === state.chainFilter));
-  const visibleIds = new Set(visible.map((node) => node.id)), edges = [];
-  const outgoing = new Map(graph.nodes.map((node) => [node.id, []]));
-  for (const edge of graph.edges) if (outgoing.has(edge.source)) outgoing.get(edge.source).push(edge);
-  for (const node of visible) {
-    const walk = (edge, path, visited) => {
-      if (visibleIds.has(edge.target)) {
-        edges.push(path.length ? { ...edge, id: `summary:${[...path, edge.id].join(":")}`, source: node.id, label: "Pencocokan & konversi PAKD", metadata: { ...edge.metadata, collapsed_api_steps: [...path, edge.id] } } : edge);
-      } else if (hidden.has(edge.target) && !visited.has(edge.target)) {
-        const nextVisited = new Set(visited); nextVisited.add(edge.target);
-        for (const next of outgoing.get(edge.target) || []) walk(next, [...path, edge.id], nextVisited);
-      }
-    };
-    for (const edge of outgoing.get(node.id) || []) walk(edge, [], new Set([node.id]));
-  }
+  const nodes = state.graph.nodes.filter(node=>(filtered === state.graph.edges || connected.has(node.id) || node.id===state.focalId || node.metadata?.is_seed_wallet || node.metadata?.is_initial_wallet || /SEED|INITIAL/.test(node.node_type)) && (state.chainFilter === "ALL" || !branches.get(node.id) || branches.get(node.id) === state.chainFilter));
+  const ids = new Set(nodes.map(node=>node.id));
   state.branchByNode = branches;
-  return { nodes: visible, edges };
+  return {nodes,edges:filtered.filter(edge=>ids.has(edge.source)&&ids.has(edge.target))};
 }
 function graphBranches(graph) {
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
@@ -582,106 +571,121 @@ function graphBranches(graph) {
 }
 
 function layoutNodes() {
-  const scoped = visibleGraph();
-  const view = ForensicGraph.project({ ...state.graph, ...scoped }, { focus: state.focusMainPath !== false });
-  state.flowProjection = view; state.viewNodes = view.nodes; state.viewEdges = view.edges;
-  const layout = ForensicGraph.layout(view), board = $("#graph-scroll");
-  state.viewportWidth = Math.max(300, board.clientWidth); state.viewportHeight = board.clientHeight || 560;
-  state.positions = layout.positions; state.lanes = layout.columns;
-  state.baseWidth = layout.width; state.baseHeight = layout.height;
-  $("#swimlanes").replaceChildren(...layout.columns.flatMap((column) => [
-    svgEl("rect", { class: "tier-divider", x: column.x - 121, y: 48, width: 242, height: layout.height - 60, rx: 12 }),
-    svgEl("text", { class: "tier-header", x: column.x - 112, y: 29 }, column.label),
-  ]));
+  const scoped = visibleGraph(), board = $("#graph-scroll");
+  const view = ForensicGraph.visualize({ ...state.graph, ...scoped }, { focalId: state.focalId, focus: state.focusMainPath !== false, flow: state.flowMode || "ALL", group: state.groupMode || "CHAIN", range: state.timelineRange, sortTime: state.sortTime !== false });
+  state.flowProjection = view; state.viewNodes = view.nodes; state.viewEdges = view.edges; state.focalId = view.focalId;
+  if (state.selected && !view.nodes.some(node=>node.id===state.selected || node.cluster_members?.some(member=>member.id===state.selected))) state.selected=null;
+  if (state.selectedEdge && !view.edges.some(edge=>edge.id===state.selectedEdge || graphMemberEdges(edge).some(member=>member.id===state.selectedEdge))) state.selectedEdge=null;
+  state.viewportWidth = Math.max(300, board.clientWidth); state.viewportHeight = board.clientHeight || 720;
+  state.layoutModel = ArkhamEngine.prepare(view, { focalId: state.focalId, width: Math.max(1000,state.viewportWidth), height: Math.max(640,state.viewportHeight), pins: state.pins || new Map(), previous: state.positions });
+  state.positions = new Map(state.layoutModel.nodes.map(node => [node.id,node])); state.lanes = [];
+  state.baseWidth = state.layoutModel.width; state.baseHeight = state.layoutModel.height;
+  $("#swimlanes").replaceChildren();
 }
 
-function edgeGeometry(source, target, index = 0, count = 1) {
-  const dx = target.x - source.x, dy = target.y - source.y;
-  const offset = count > 1 ? (index - (count - 1) / 2) * 70 : 0;
-  if (Math.abs(dx) < 20) {
-    const direction = source.x > state.baseWidth / 2 ? -1 : 1;
-    const side = source.x + direction * (135 + Math.abs(offset)), sy = source.y - 12, ty = target.y + 12;
-    return { path: `M${source.x + direction * 105} ${sy} C${side + direction * 65} ${sy - 65} ${side + direction * 65} ${ty + 65} ${target.x + direction * 105} ${ty}`, labelX: side + direction * 25, labelY: source.y === target.y ? source.y - 62 : (sy + ty) / 2 };
-  }
-  const direction = dx > 0 ? 1 : -1, sx = source.x + direction * 108, tx = target.x - direction * 112;
-  const bend = Math.max(42, Math.abs(tx - sx) * .48);
-  return { path: `M${sx} ${source.y} C${sx + direction * bend} ${source.y + offset} ${tx - direction * bend} ${target.y + offset} ${tx} ${target.y}`, labelX: (sx + tx) / 2, labelY: Math.abs(dy) < 80 ? Math.min(source.y,target.y) - 58 + offset : (source.y + target.y) / 2 + offset * .75 - 10 };
+function entityIcon(node) {
+  if (node.cluster_members?.length) return entityIcon(node.cluster_members[0]);
+  const attributed = ForensicGraph.isExchange(node) || node.node_zone === "CRYPTO_EXCHANGE_BRIDGE" || /^PAKD_/.test(node.node_type || "");
+  const name = [node.metadata?.public_entity?.label,node.entity_label,node.label,node.metadata?.mirror_match?.pakd_name].filter(Boolean).join(" ").toLowerCase();
+  if (attributed && /\bindodax\b/.test(name)) return "/static/icons/entities/indodax.png";
+  if (attributed && /\btokocrypto\b/.test(name)) return "/static/icons/entities/tokocrypto.png";
+  if (node.node_zone === "FIAT_BANK") return null;
+  return chainInfo(node)?.icon || null;
 }
 
-function placeEdgeLabel(geometry, width, occupied) {
-  const labelX = Math.max(width / 2 + 8, Math.min(state.baseWidth - width / 2 - 8, geometry.labelX));
-  const initial = Math.max(66, Math.min(state.baseHeight - 22, geometry.labelY));
-  const clear = box => !occupied.some(other => box.x < other.x + other.width + 4 && box.x + box.width + 4 > other.x && box.y < other.y + other.height + 4 && box.y + box.height + 4 > other.y);
-  for (let step = 0; step <= Math.ceil(state.baseHeight / 26); step++) {
-    for (const direction of step ? [-1,1] : [1]) {
-      const labelY = initial + direction * step * 26;
-      if (labelY < 66 || labelY > state.baseHeight - 22) continue;
-      const box = {x:labelX - width / 2,y:labelY - 13,width,height:22};
-      if (clear(box)) { occupied.push(box); return {...geometry,labelX,labelY}; }
-    }
-  }
-  const labelY = state.baseHeight + 26;
-  state.baseHeight += 52;
-  occupied.push({x:labelX-width/2,y:labelY-13,width,height:22});
-  return {...geometry,labelX,labelY};
+function edgeGeometry(source, target, count = 1, width = 2) {
+  return ArkhamEngine.fanPaths(source,target,count,width);
 }
 
-function parallelEdgeSlots(edges) {
-  const groups = new Map(), slots = new Map();
-  for (const edge of edges) {
-    const key = JSON.stringify([edge.source, edge.target].sort());
-    if (!groups.has(key)) groups.set(key, []);
-    groups.get(key).push(edge);
+function fanTransactionCount(edge) {
+  const transactions = new Set((edge.members || [edge]).map((member,index) => {
+    const hash = String(member.tx_hash || member.signature || member.metadata?.tx_hash || "");
+    const identity = /^0x[a-f0-9]+$/i.test(hash) || /^[a-f0-9]{64}$/i.test(hash) ? hash.toLowerCase() : hash;
+    const rawChain=String(member.chain || member.metadata?.chain || member.chain_branch || "").toUpperCase().replace(/_(?:ERC20|TRC20)$/,"");
+    const chain=({ETH:"ETHEREUM",SOL:"SOLANA",BITCOIN:"BTC"})[rawChain] || rawChain;
+    return `${chain}:${identity || member.id || index}`;
+  }));
+  return Math.max(1,transactions.size);
+}
+
+function edgeFlowSummary(edge) {
+  const count=fanTransactionCount(edge),transfers=(edge.members || [edge]).length;
+  const amount=ForensicGraph.amountSummary(edge).replace(/\s*(?:\(\d+ tx\)|\d+ tx)$/,"").replace(/[·\s]+$/,"");
+  return `${amount || "Relasi"} (${count} tx${transfers>count ? `, ${transfers} transfers` : ""})`;
+}
+
+function drawGraphPositions() {
+  if (!state.graphEngine) return;
+  for (const group of document.querySelectorAll("#nodes .node")) {
+    const node = state.positions.get(group.dataset.nodeId); if (!node) continue;
+    group.setAttribute("transform", `translate(${node.x} ${node.y})`);
+    const lock = group.querySelector(".node-lock"); if (lock) lock.style.visibility = state.pins.has(node.id) ? "visible" : "hidden";
   }
-  for (const siblings of groups.values()) {
-    siblings.sort((a, b) => a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
-    siblings.forEach((edge, index) => slots.set(edge.id, { index: edge.source > edge.target ? siblings.length - 1 - index : index, count: siblings.length }));
+  for (const group of document.querySelectorAll("#edges .edge-group")) {
+    const edge = state.viewEdges.find(item => item.id === group.dataset.edgeId);
+    const source = state.positions.get(edge.source), target = state.positions.get(edge.target);
+    const paths = edgeGeometry(source,target,fanTransactionCount(edge),edge.width);
+    const strands = group.querySelectorAll(".fan-strand"); strands.forEach((path,index) => path.setAttribute("d",paths[index % paths.length]));
+    group.querySelector(".edge-hit").setAttribute("d",paths[Math.floor(paths.length/2)]);
   }
-  return slots;
+  if(state.autoFit)fitGraph();
+}
+
+function showGraphTooltip(event, title, detail) {
+  const tooltip = $("#graph-tooltip"), bounds = $("#graph-board").getBoundingClientRect();
+  tooltip.replaceChildren(el("strong","",title),el("small","",detail)); tooltip.hidden = false;
+  tooltip.style.left = `${Math.max(10,Math.min(bounds.width-260,event.clientX-bounds.left+14))}px`;
+  tooltip.style.top = `${Math.max(140,Math.min(bounds.height-110,event.clientY-bounds.top+14))}px`;
 }
 
 function renderGraph() {
   if (!state.graph) return;
+  state.graphEngine?.stop(); state.graphEngine = null;
   layoutNodes();
   if ($("#graph-empty")) $("#graph-empty").hidden = state.viewNodes.length > 0;
-  const slots = parallelEdgeSlots(state.viewEdges);
-  const occupied = [...state.positions.values()].map(point => ({x:point.x-110,y:point.y-46,width:220,height:92}));
-  $("#edges").replaceChildren(...state.viewEdges.map((edge) => {
-    const source = state.positions.get(edge.source), target = state.positions.get(edge.target), slot = slots.get(edge.id);
-    const candidate = edge.candidate, marker = candidate ? "purple" : edge.critical ? "green" : "amber";
-    const group = svgEl("g", { class: `edge-group${candidate ? " bridge-candidate" : ""}${edge.critical ? " critical" : ""}`, "data-edge-id": edge.id, "data-source": edge.source, "data-target": edge.target, "data-marker": marker, tabindex: 0, role: "button", "aria-label": `Inspeksi ${edge.members.length} transaksi: ${ForensicGraph.amountSummary(edge)}`, "aria-pressed": "false" });
-    const geometry = edgeGeometry(source, target, slot.index, slot.count);
-    const summary = `${candidate ? "KANDIDAT · " : ""}${ForensicGraph.amountSummary(edge)}`;
-    const labelWidth = Math.min(196, Math.max(88, summary.length * 5.1 + 16));
-    const {path,labelX,labelY} = placeEdgeLabel(geometry,labelWidth,occupied);
-    group.append(svgEl("path", { class: "edge-hit", d: path }), svgEl("path", { class: "graph-edge", d: path, "stroke-width": edge.width, "marker-end": `url(#arrow-${marker})` }));
-    const pill = svgEl("g", { class: "edge-pill" });
-    pill.append(svgEl("rect", { x: labelX - labelWidth / 2, y: labelY - 13, width: labelWidth, height: 22, rx: 8 }), svgEl("text", { class: "edge-label", x: labelX, y: labelY + 1 }, short(summary, 36)));
-    group.append(pill, svgEl("title", {}, `${summary}\nKlik untuk seluruh bukti transaksi; ketebalan relatif per aset, bukan valuasi lintas token.`));
-    group.addEventListener("click", (event) => { if (!dragState.moved) { event.stopPropagation(); selectEdge(edge.id); } });
-    group.addEventListener("keydown", (event) => { if (["Enter", " "].includes(event.key)) { event.preventDefault(); selectEdge(edge.id); } });
+  const byId = new Map(state.layoutModel.nodes.map(node=>[node.id,node]));
+  $("#edges").replaceChildren(...state.viewEdges.map(edge => {
+    const source=byId.get(edge.source),target=byId.get(edge.target);
+    const side = state.layoutModel.links.find(link=>link.id===edge.id)?.side === "in" ? "inflow" : state.layoutModel.links.find(link=>link.id===edge.id)?.side === "out" ? "outflow" : "neutral";
+    const group=svgEl("g",{class:`edge-group edge-fan ${side}${edge.candidate ? " candidate" : ""}`,"data-edge-id":edge.id,"data-source":edge.source,"data-target":edge.target,tabindex:0,role:"button","aria-label":`${edge.candidate ? "Kandidat · " : ""}${edgeFlowSummary(edge)}. Inspeksi transaksi.`,"aria-pressed":"false"});
+    const paths=edgeGeometry(source,target,fanTransactionCount(edge),edge.width);
+    group.append(svgEl("path",{class:"edge-hit",d:paths[Math.floor(paths.length/2)],"stroke-width":Math.max(16,edge.width*3)}));
+    for(const path of paths) group.append(svgEl("path",{class:"fan-strand",d:path,"stroke-width":paths.length>1 ? .7 : Math.max(1,edge.width*.45)}));
+    group.append(svgEl("title",{},`${edgeFlowSummary(edge)}${edge.candidate ? " · KANDIDAT belum terverifikasi" : ""}`));
+    group.addEventListener("click",event=>{if(!dragState.moved){event.stopPropagation();selectEdge(edge.id);}});
+    group.addEventListener("keydown",event=>{if(["Enter"," "].includes(event.key)){event.preventDefault();selectEdge(edge.id);}});
+    group.addEventListener("pointerenter",event=>showGraphTooltip(event,edgeFlowSummary(edge),edge.candidate ? "Kandidat korelasi; belum membuktikan perpindahan dana" : `${fanTransactionCount(edge)} transaksi unik · ${edge.members.length} transfer · klik untuk rincian asli`));
+    group.addEventListener("pointerleave",()=>$("#graph-tooltip").hidden=true);
     return group;
   }));
-  $("#nodes").replaceChildren(...state.viewNodes.map((node) => {
-    const {x,y} = state.positions.get(node.id), role = state.flowProjection.roles.get(node.id), hop = state.flowProjection.hops.get(node.id) || 0;
-    const badge = role === "target" ? (ForensicGraph.isExchange(node) ? "🎯 TARGET EXCHANGE / FREEZE" : "🎯 TARGET TINDAKAN / REVIEW") : role === "seed" ? "📍 WALLET AWAL (SEED)" : role === "bridge" ? "🌉 BRIDGE / DEX" : role === "source" ? "SUMBER / ORIGIN" : role === "cluster" ? "📦 DOMPET NILAI KECIL" : `PERANTARA (HOP ${hop})`;
-    const group = svgEl("g", { class: `node forensic-card role-${role}${node.id === state.selected ? " selected" : ""}`, transform: `translate(${x} ${y})`, "data-node-id": node.id, tabindex: 0, role: "button", "aria-label": `${node.label}. ${badge}. Tampilkan detail.`, "aria-pressed": String(node.id === state.selected) });
-    group.append(svgEl("rect", {class:"card-surface",x:-105,y:-42,width:210,height:84,rx:10}), svgEl("text",{class:"forensic-node-badge",x:-90,y:-25},badge));
-    group.append(svgEl("text",{class:"forensic-node-title",x:-90,y:-7},short(node.metadata?.public_entity?.label || node.label,26)));
-    const address = node.address || node.account || (role === "cluster" ? `${node.cluster_members.length} alamat · klik untuk daftar` : chainInfo(node)?.badge || friendly(node.node_type));
-    group.append(svgEl("text",{class:"forensic-node-address",x:-90,y:11},short(address,30)));
-    const inflow = nodeInflowEdges(node);
-    const amount = inflow.length ? ForensicGraph.amountSummary(inflow) : node.asset && Number(node.crypto_amount) > 0 ? `${number(node.crypto_amount,5)} ${node.asset}` : Number(node.amount_idr)>0 ? compactIdr(node.amount_idr) : `Hop ${hop} · ${role === "cluster" ? "ringkasan visual" : "sampel teramati"}`;
-    group.append(svgEl("text",{class:"forensic-node-amount",x:-90,y:29},short(amount,30)), svgEl("title",{},`${node.label}\n${node.address || node.account || ""}\n${amount}`));
-    group.addEventListener("click", event => { if (!dragState.moved) { event.stopPropagation(); selectNode(node.id); } });
-    group.addEventListener("keydown", event => { if (["Enter"," "].includes(event.key)) { event.preventDefault(); selectNode(node.id); } });
+  $("#nodes").replaceChildren(...state.layoutModel.nodes.map(model=>{
+    const node=model.original, group=svgEl("g",{class:`node arkham-node${node.id===state.focalId ? " focal" : ""}${node.id===state.selected ? " selected" : ""}`,"data-node-id":node.id,tabindex:0,role:"button","aria-label":`${node.label || node.address || node.id}. ${friendly(ForensicGraph.role(node))}. Tampilkan detail.`,"aria-pressed":String(node.id===state.selected)});
+    const icon=entityIcon(node),size=model.radius>34?28:24;
+    const glyph=svgEl("text",{class:"node-entity-glyph",x:0,y:-2,"text-anchor":"middle","aria-hidden":"true"},node.node_zone==="FIAT_BANK"?"▥":ForensicGraph.role(node)==="bridge"?"⇄":"◇");
+    glyph.style.visibility=icon?"hidden":"visible";
+    group.append(svgEl("circle",{class:"node-core",r:model.radius}),glyph);
+    if(icon){const image=svgEl("image",{class:"node-entity-icon",href:icon,x:-size/2,y:-size/2-8,width:size,height:size,"clip-path":"url(#web3icon-round)","aria-hidden":"true"});image.addEventListener("error",()=>{image.style.visibility="hidden";glyph.style.visibility="visible";});group.append(image);}
+    const label=svgEl("text",{class:"node-label",x:0,y:19,"text-anchor":"middle"},ForensicGraph.label(node));
+    if(label.textContent.length>10){label.setAttribute("textLength",String(model.radius*1.75));label.setAttribute("lengthAdjust","spacingAndGlyphs");}
+    group.append(label,svgEl("text",{class:"node-lock",x:model.radius*.65,y:-model.radius*.7,"aria-hidden":"true"},"🔒"),svgEl("title",{},`${node.label || ""}\n${node.address || node.account || node.id}\nGeser untuk pin; klik dua kali untuk lepas.`));
+    group.addEventListener("click",event=>{if(!dragState.moved){event.stopPropagation();selectNode(node.id);}});
+    group.addEventListener("dblclick",event=>{event.preventDefault();event.stopPropagation();setNodePinned(node.id,false);});
+    group.addEventListener("keydown",event=>{if(["Enter"," "].includes(event.key)){event.preventDefault();selectNode(node.id);}else if(event.key.toLowerCase()==="p"){event.preventDefault();setNodePinned(node.id,!state.pins.has(node.id));}else if(["ArrowLeft","ArrowRight","ArrowUp","ArrowDown"].includes(event.key)){event.preventDefault();const point=state.positions.get(node.id);movePinnedNode(node.id,point.x+(event.key==="ArrowLeft"?-20:event.key==="ArrowRight"?20:0),point.y+(event.key==="ArrowUp"?-20:event.key==="ArrowDown"?20:0));}});
+    group.addEventListener("pointerenter",event=>showGraphTooltip(event,node.metadata?.public_entity?.label || node.label || node.id,`${node.chain || "Fiat / PAKD"} · ${friendly(ForensicGraph.role(node))} · klik untuk inspeksi`));
+    group.addEventListener("pointerleave",()=>$("#graph-tooltip").hidden=true);
     return group;
   }));
-  renderMinimap(); updateTransform(); highlightGraphSelection();
-  if ($("#graph-node-count")) $("#graph-node-count").textContent = String(state.viewNodes.length);
-  if ($("#graph-edge-count")) $("#graph-edge-count").textContent = String(state.viewEdges.length);
-  if ($("#flow-focus-note")) $("#flow-focus-note").textContent = state.investigationView === "audit" ? "Audit menampilkan semua transaksi pada chain dan rentang waktu aktif, termasuk yang disembunyikan pada peta." : `${state.focusMainPath ? "Fokus aktif" : "Semua jalur"} · ${state.flowProjection.hiddenEdges.length} transfer kecil/spam difilter · ${state.flowProjection.clusterCount || 0} kelompok wallet. Bukti lengkap tetap di audit, inspector, dan ekspor. Ketebalan relatif per aset; bukan valuasi lintas token.`;
-  renderTransactions(); renderAuditTrail();
+  const d3=window.d3;
+  state.autoFit=true;
+  state.graphEngine=ArkhamEngine.create(state.layoutModel,{d3,onTick:drawGraphPositions,requestFrame:callback=>requestAnimationFrame(callback),cancelFrame:id=>cancelAnimationFrame(id),reducedMotion:window.matchMedia("(prefers-reduced-motion: reduce)").matches,paused:state.physicsFrozen});
+  state.graphEngine.tick(Math.max(2,Math.min(24,Math.floor(256/Math.max(1,state.viewNodes.length)))));
+  state.autoFit = true; drawGraphPositions(); bindD3Interactions(); updateTransform(); highlightGraphSelection();
+  $("#graph-node-count").textContent=String(state.viewNodes.length); $("#graph-edge-count").textContent=String(state.viewEdges.length);
+  const focal=state.viewNodes.find(node=>node.id===state.focalId);
+  $("#focal-pill-label").textContent=short(focal?.address || focal?.account || focal?.label || state.graph.iasc_ticket_id,38);
+  $("#visualizer-status").textContent=`${d3 ? "D3 v7" : "Local physics · offline fallback"} · ${state.viewNodes.length}/${state.graph.nodes.length} entities · ${state.viewEdges.length} flows · ${state.flowProjection.unknownUsdCount} tx without USD valuation${state.physicsFrozen ? " · layout frozen" : ""}`;
+  $("#flow-focus-note").textContent="Evidence remains complete in the audit and export. USD ≥ $0.10 applies only to recorded USD values; unknown values stay visible. Timeline bars count transactions.";
+  renderTimeline(); renderTransactions(); renderAuditTrail();
 }
 
 function compactIdr(value) {
@@ -689,66 +693,55 @@ function compactIdr(value) {
   return amount >= 1e9 ? `Rp ${number(amount / 1e9, 1)} M` : amount >= 1e6 ? `Rp ${number(amount / 1e6, 1)} jt` : idr(amount);
 }
 
-function renderMinimap() {
-  const svg = $("#graph-minimap"), content = $("#minimap-content");
-  if (!svg || !content) return;
-  svg.setAttribute("viewBox", `0 0 ${state.baseWidth} ${state.baseHeight}`);
-  const edges = state.viewEdges.map((edge) => {
-    const source = state.positions.get(edge.source), target = state.positions.get(edge.target);
-    return source && target ? svgEl("line", { x1: source.x, y1: source.y, x2: target.x, y2: target.y, class: "minimap-edge" }) : null;
-  }).filter(Boolean);
-  const nodes = state.viewNodes.map((node) => { const point = state.positions.get(node.id); return svgEl("circle", { cx: point.x, cy: point.y, r: 17, fill: nodeTheme(node).color, class: "minimap-node" }); });
-  content.replaceChildren(...edges, ...nodes);
-}
-
 function highlightGraphSelection() {
-  for (const group of document.querySelectorAll(".edge-group")) {
-    const bundle = state.viewEdges.find(edge => edge.id === group.dataset.edgeId);
-    const related = group.dataset.edgeId === state.selectedEdge || Boolean(state.selectedEdge && bundle && graphMemberEdges(bundle).some(edge => edge.id === state.selectedEdge)) || Boolean(state.selected && [group.dataset.source, group.dataset.target].includes(state.selected));
-    group.classList.toggle("related", related);
-    group.querySelector(".graph-edge")?.setAttribute("marker-end", `url(#arrow-${related ? "green" : group.dataset.marker || "amber"})`);
+  const selected=state.viewNodes.find(node=>node.id===state.selected || node.cluster_members?.some(member=>member.id===state.selected))?.id;
+  const connected=new Set(selected?[selected]:[]); let matching=false;
+  for(const group of document.querySelectorAll(".edge-group")){
+    const bundle=state.viewEdges.find(edge=>edge.id===group.dataset.edgeId);
+    const related=group.dataset.edgeId===state.selectedEdge || Boolean(state.selectedEdge&&bundle&&graphMemberEdges(bundle).some(edge=>edge.id===state.selectedEdge)) || Boolean(selected&&[group.dataset.source,group.dataset.target].includes(selected));
+    if(related){connected.add(group.dataset.source);connected.add(group.dataset.target);matching=true;}
+    group.classList.toggle("related",related);group.classList.toggle("dimmed",Boolean((selected||state.selectedEdge)&&!related));
   }
+  for(const group of document.querySelectorAll(".node")){group.classList.toggle("dimmed",Boolean((selected||matching)&&!connected.has(group.dataset.nodeId)));group.classList.toggle("selected",group.dataset.nodeId===selected);group.setAttribute("aria-pressed",String(group.dataset.nodeId===selected));}
 }
 
-function updateTransform() {
-  const canvas = $("#graph-scroll"), svg = $("#graph"), height = Math.max(canvas.clientHeight, state.baseHeight * state.scale + Math.max(0,state.y));
-  svg.setAttribute("viewBox", `0 0 ${Math.max(300,canvas.clientWidth)} ${height}`); svg.style.height = `${height}px`; svg.style.width = "100%";
-  $("#viewport").setAttribute("transform", `translate(${state.x} ${state.y}) scale(${state.scale})`);
-  $("#zoom-level").textContent = `${Math.round(state.scale * 100)}%`;
-  const windowRect = $("#minimap-window"), board = $("#graph-scroll");
-  if (windowRect && board && state.scale > 0) {
-    const left = Math.max(0, Math.min(state.baseWidth, -state.x / state.scale)), top = Math.max(0, Math.min(state.baseHeight, (board.scrollTop - state.y) / state.scale));
-    const right = Math.max(0, Math.min(state.baseWidth, (board.clientWidth - state.x) / state.scale)), bottom = Math.max(0, Math.min(state.baseHeight, (board.scrollTop + board.clientHeight - state.y) / state.scale));
-    windowRect.setAttribute("x", left); windowRect.setAttribute("y", top);
-    windowRect.setAttribute("width", Math.max(0, right - left)); windowRect.setAttribute("height", Math.max(0, bottom - top));
-    windowRect.style.visibility = right > left && bottom > top ? "visible" : "hidden";
-  }
+function updateTransform(fromD3=false) {
+  const board=$("#graph-scroll"),svg=$("#graph");
+  svg.setAttribute("viewBox",`0 0 ${Math.max(300,board.clientWidth)} ${board.clientHeight || 720}`);svg.style.height="100%";svg.style.width="100%";
+  if(state.usingD3&&state.zoomBehavior&&!fromD3){window.d3.select(svg).call(state.zoomBehavior.transform,window.d3.zoomIdentity.translate(state.x,state.y).scale(state.scale));return;}
+  $("#viewport").setAttribute("transform",`translate(${state.x} ${state.y}) scale(${state.scale})`);$("#zoom-level").textContent=`${Math.round(state.scale*100)}%`;
 }
 
-function resetView() {
-  fitGraph();
-}
-
-function fitGraph() {
-  const board = $("#graph-scroll");
-  state.scale = Math.max(.01, Math.min(1, (board.clientWidth - 20) / state.baseWidth));
-  state.x = (board.clientWidth - state.baseWidth * state.scale) / 2;
-  state.y = 0;
-  board.scrollTop = 0;
-  board.scrollLeft = 0;
+function resetView(){fitGraph();}
+function fitGraph(){
+  const board=$("#graph-scroll"),points=[...state.positions.values()];if(!points.length)return;
+  const left=Math.min(...points.map(point=>point.x-point.radius-15)),right=Math.max(...points.map(point=>point.x+point.radius+15)),top=Math.min(...points.map(point=>point.y-point.radius-15)),bottom=Math.max(...points.map(point=>point.y+point.radius+15));
+  const drawer=$("#inspector-drawer"),boardRect=board.getBoundingClientRect(),covered=drawer.hidden?0:Math.max(0,boardRect.right-drawer.getBoundingClientRect().left);
+  const topPadding=Math.max(145,($(".visualizer-overlay")?.clientHeight || 0)+34),bottomPadding=Math.max(95,($(".activity-timeline")?.clientHeight || 0)+30);
+  const availableWidth=Math.max(180,board.clientWidth-100-covered),availableHeight=Math.max(80,board.clientHeight-topPadding-bottomPadding);
+  const focal=state.positions.get(state.focalId)||{x:(left+right)/2,y:(top+bottom)/2};
+  const halfWidth=Math.max(focal.x-left,right-focal.x,1),halfHeight=Math.max(focal.y-top,bottom-focal.y,1);
+  state.scale=Math.max(.01,Math.min(1.15,availableWidth/(halfWidth*2),availableHeight/(halfHeight*2)));
+  state.x=(board.clientWidth-covered)/2-focal.x*state.scale;state.y=topPadding+availableHeight/2-focal.y*state.scale;
   updateTransform();
 }
-
-function zoom(factor, point = { x: $("#graph-scroll").clientWidth / 2, y: $("#graph-scroll").scrollTop + $("#graph-scroll").clientHeight / 2 }) {
-  const next = Math.max(.01, Math.min(3, state.scale * factor));
-  const ratio = next / state.scale;
-  state.x = point.x - (point.x - state.x) * ratio;
-  state.y = point.y - (point.y - state.y) * ratio;
-  state.scale = next;
-  updateTransform();
+function zoom(factor,point={x:$("#graph-scroll").clientWidth/2,y:$("#graph-scroll").clientHeight/2}){
+  state.autoFit=false;
+  const next=Math.max(.01,Math.min(4,state.scale*factor)),ratio=next/state.scale;state.x=point.x-(point.x-state.x)*ratio;state.y=point.y-(point.y-state.y)*ratio;state.scale=next;updateTransform();
+}
+function openInspector(open=true){$("#inspector-drawer").hidden=!open;$("#more-info-button").setAttribute("aria-expanded",String(open));if(state.autoFit)fitGraph();}
+function movePinnedNode(id,x,y){state.autoFit=false;state.pins.set(id,{x,y});if(state.graphEngine)state.graphEngine.pin(id,x,y);else drawGraphPositions();}
+function setNodePinned(id,pinned){
+  const point=state.positions.get(id);if(!point)return;
+  if(pinned)movePinnedNode(id,point.x,point.y);else{state.pins.delete(id);state.graphEngine?.unpin(id);drawGraphPositions();}
+  if(state.selected===id)renderInspector();
+}
+function setFocalNode(id){
+  state.pins.delete(id);state.focalId=id;state.selected=id;state.selectedEdge=null;state.chainFilter="ALL";stopAnimation();renderCaseSummary();renderGraph();fitGraph();selectNode(id);
 }
 
-function selectNode(id) {
+function selectNode(id, open = true) {
+  if (open) openInspector();
   state.selectedEdge = null;
   for (const group of document.querySelectorAll(".edge-group")) { group.classList.remove("selected"); group.setAttribute("aria-pressed", "false"); }
   state.selected = id;
@@ -767,6 +760,7 @@ function selectNode(id) {
 }
 
 function selectEdge(id) {
+  openInspector();
   state.selectedEdge = id;
   state.selected = null;
   state.selectedRequestId = null;
@@ -809,22 +803,50 @@ function auditTrailRows(graph) {
     .sort((a,b) => Number(b.sourceRole === "source") - Number(a.sourceRole === "source") || a.hop - b.hop || String(a.edge.timestamp || "").localeCompare(String(b.edge.timestamp || "")) || String(a.edge.id).localeCompare(String(b.edge.id)));
 }
 
-function renderTransferItems(edges) {
-  const section = el("details", "technical-details transfer-items");
-  section.open = true;
-  section.append(el("summary", "", `${edges.length} transaksi / relasi · rincian asli`));
-  const list = el("div", "cluster-list");
-  for (const edge of edges) {
-    const item = el("div", "transfer-item");
-    item.append(el("strong", "", edge.asset && edge.crypto_amount != null ? `${number(edge.crypto_amount, 12)} ${edge.asset}` : edge.amount_idr != null ? idr(edge.amount_idr) : edge.label || friendly(edge.edge_type)));
-    item.append(el("small", "", `${edge.chain || edge.metadata?.chain || "Fiat / ledger"} · ${isCandidateEdge(edge) ? "KANDIDAT · belum terverifikasi" : isLiveRecord(edge) ? "Mainnet · atribusi belum terbukti" : "Bukti sintetis"}`));
-    if (edge.tx_hash) item.append(el("code", "", edge.tx_hash));
-    if (edge.metadata?.token_contract || edge.metadata?.contract_address) item.append(el("small", "", `Kontrak: ${edge.metadata.token_contract || edge.metadata.contract_address}`));
-    if (edge.timestamp) item.append(el("small", "", dateTime(edge.timestamp)));
-    const button = el("button", "transaction-detail", "Inspeksi transaksi"); button.type = "button";
-    button.addEventListener("click", () => selectEdge(edge.id)); item.append(button); list.append(item);
+function flowSummaryRows(edges) {
+  const totals=new Map();
+  function add(asset,chain,contract,raw){const amount=Number(raw);if(raw==null||typeof raw==="boolean"||String(raw).trim()===""||!Number.isFinite(amount)||amount<=0)return;const key=JSON.stringify([asset,chain,contract]);const current=totals.get(key);const total=(current?.amount||0)+amount;if(Number.isFinite(total))totals.set(key,{asset,chain,contract,amount:total});}
+  for(const edge of edges){
+    const contract=String(edge.metadata?.token_contract||edge.metadata?.contract_address||edge.contract||edge.contract_address||"");
+    if(edge.asset)add(edge.asset,edge.chain||edge.metadata?.chain||"",/^0x/i.test(contract)?contract.toLowerCase():contract,edge.crypto_amount);
+    add("IDR","","",edge.amount_idr);add("USD","","",edge.amount_usd??edge.usd_amount??edge.usd_value??edge.value_usd??edge.metadata?.amount_usd??edge.metadata?.usd_value??edge.metadata?.value_usd);
   }
-  section.append(list); return section;
+  return [...totals.values()];
+}
+
+function renderNodeControls(node){
+  const controls=el("div","inspector-actions"),pin=el("button","button secondary",state.pins.has(node.id)?"🔓 Unpin Node":"🔒 Pin Node"),focal=el("button","button","🎯 Set as Center / Expand Trail");
+  pin.type="button";pin.id="node-pin-button";pin.setAttribute("aria-pressed",String(state.pins.has(node.id)));pin.disabled=!state.positions.has(node.id);
+  pin.addEventListener("click",()=>setNodePinned(node.id,!state.pins.has(node.id)));
+  focal.type="button";focal.id="node-focal-button";focal.title="Pivot pada bukti yang sudah dimuat; tombol Expand hop mengambil data tambahan.";
+  focal.addEventListener("click",()=>setFocalNode(node.cluster_members?.[0]?.id||node.id));controls.append(pin,focal);return controls;
+}
+function renderFlowSummary(node){
+  const ids=new Set((node.cluster_members||[node]).map(item=>item.id)),edges=transactionRows(state.graph,state.chainFilter,"",state.timeRange),section=el("section","flow-summary");
+  for(const [direction,label] of [["in","Total Inflow"],["out","Total Outflow"]]){
+    const part=el("div",direction),records=edges.filter(edge=>ids.has(edge[direction==="in"?"target":"source"]));
+    part.append(el("span","",label));const totals=flowSummaryRows(records);
+    if(!totals.length)part.append(el("strong","","—"));
+    for(const row of totals){const value=el("strong","",`${number(row.amount,8)} ${row.asset}`);value.title=`${row.chain || row.asset}${row.contract ? " · "+row.contract : ""}`;part.append(value);}
+    section.append(part);
+  }
+  return section;
+}
+function renderTransferItems(edges){
+  const section=el("details","technical-details transfer-items");section.open=true;section.append(el("summary","",`${edges.length} transaksi / relasi · rincian asli`));
+  const scroll=el("div","connected-transactions"),table=el("table"),head=el("thead"),heading=el("tr"),body=el("tbody"),byId=new Map((state.graph?.nodes||[]).map(node=>[node.id,node]));
+  for(const label of ["TxHash / bukti","Timestamp","Token / nilai","Counterparty","Inspeksi"]){const th=el("th","",label);th.scope="col";heading.append(th);}head.append(heading);
+  for(const edge of edges){
+    const row=el("tr"),hash=el("td"),counterparty=el("td"),action=el("td"),link=isLiveRecord(edge)&&edge.tx_hash?explorerLink("tx",edge.tx_hash,short(edge.tx_hash,15),edge):null;
+    hash.append(link||el("code","",short(edge.tx_hash||edge.label||edge.id,22)),el("small","",isCandidateEdge(edge)?"KANDIDAT · belum terverifikasi":isLiveRecord(edge)?"Mainnet · atribusi belum terbukti":"Bukti sintetis"));
+    hash.title=edge.tx_hash||edge.id;
+    const from=byId.get(edge.source),to=byId.get(edge.target);counterparty.append(el("span","",`${short(from?.metadata?.public_entity?.label||from?.address||from?.account||from?.label||edge.source,16)} → ${short(to?.metadata?.public_entity?.label||to?.address||to?.account||to?.label||edge.target,16)}`));
+    const amount=edge.asset&&edge.crypto_amount!=null?`${number(edge.crypto_amount,12)} ${edge.asset}`:edge.amount_idr!=null?idr(edge.amount_idr):"—";
+    const value=el("td","",amount);value.append(el("small","",edge.chain||edge.metadata?.chain||"Fiat / ledger"));
+    const button=el("button","transaction-detail","Lihat");button.type="button";button.addEventListener("click",()=>selectEdge(edge.id));action.append(button);
+    row.append(hash,el("td","",edge.timestamp?dateTime(edge.timestamp):"Tanpa timestamp"),value,counterparty,action);body.append(row);
+  }
+  table.append(head,body);scroll.append(table);section.append(scroll);return section;
 }
 
 function renderBundleInspector(bundle) {
@@ -847,7 +869,7 @@ function renderClusterInspector(node) {
     button.addEventListener("click", () => selectNode(member.id)); list.append(button);
   }
   inspector.replaceChildren(el("div", "inspector-type", "RINGKASAN VISUAL"), el("h3", "", `${node.cluster_members.length} dompet nilai kecil lainnya`),
-    el("p", "scope-note", "Pilih alamat untuk memeriksa semua transaksi aslinya. Pengelompokan ini tidak menyatakan pemilik yang sama."), list);
+    el("p", "scope-note", "Pilih alamat untuk memeriksa bukti anggotanya. Kelompok hanya memakai atribusi pemilik yang eksplisit."), renderNodeControls(node), renderFlowSummary(node), list);
 }
 
 function renderAuditTrail() {
@@ -878,6 +900,7 @@ function renderAuditTrail() {
 function setInvestigationView(view) {
   state.investigationView = view; stopAnimation();
   const audit = view === "audit";
+  if (audit) state.graphEngine?.stop();
   $("#flow-graph-view").hidden = audit; $("#audit-trail-view").hidden = !audit;
   $("#flow-view-button").setAttribute("aria-pressed", String(!audit)); $("#audit-view-button").setAttribute("aria-pressed", String(audit));
   $("#fit-button").disabled = audit; $("#focus-main-path").disabled = audit;
@@ -993,7 +1016,7 @@ function renderInspector() {
     addDetail(extra, "Unit pemberi keputusan", decision.decided_by_unit);
     addDetail(extra, "Nominal disetujui institusi", idr(decision.approved_frozen_amount_idr));
   }
-  inspector.replaceChildren(type, heading, entity, status, details);
+  inspector.replaceChildren(type, heading, entity, status, renderNodeControls(node), renderFlowSummary(node), details);
   const transfers = state.graph.edges.filter(edge => edge.source === node.id || edge.target === node.id);
   if (transfers.length) inspector.append(renderTransferItems(transfers));
   if (extra.children.length) inspector.append(technicalDetails);
@@ -1277,10 +1300,37 @@ async function animate() {
     $("#animation-step").textContent = `${String(index + 1).padStart(2, "0")} / ${edges.length} · ${ForensicGraph.amountSummary(edge)}`;
     selectNode(edge.target);
     const position = state.positions.get(edge.target);
-    if (position) $("#graph-scroll").scrollTo({ top: Math.max(0, position.y * state.scale + state.y - $("#graph-scroll").clientHeight / 2), behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "instant" : "smooth" });
+    if (position) { state.x = $("#graph-scroll").clientWidth/2-position.x*state.scale; state.y = $("#graph-scroll").clientHeight/2-position.y*state.scale; updateTransform(); }
     await new Promise((resolve) => setTimeout(resolve, window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 100 : 1050));
   }
   if (token === state.animation) { stopAnimation(); log("Animasi selesai. Semua relasi tersedia untuk diinspeksi."); }
+}
+
+function renderTimeline(){
+  const edges=transactionRows(state.graph,state.chainFilter,"",state.timeRange),data=ForensicGraph.timeline(edges);state.timelineData=data;
+  const svg=$("#activity-timeline"),bars=[],max=Math.max(1,...data.bins.map(bin=>bin.count));
+  for(let index=0;index<data.bins.length;index++){const bin=data.bins[index],width=1000/data.bins.length,height=bin.count/max*37;const bar=svgEl("rect",{class:"timeline-bin",x:index*width+1,y:49-height,width:Math.max(1,width-2),height});bar.append(svgEl("title",{},`${bin.count} transaksi · ${dateTime(bin.start)}`));bars.push(bar);}
+  if(data.start!=null)for(let index=0;index<7;index++){const time=data.start+(data.end-data.start)*index/6;const format=new Intl.DateTimeFormat("en-US",data.end-data.start>3*86400000?{month:"short",year:"2-digit"}:{month:"short",day:"2-digit",hour:"2-digit",hour12:false});bars.push(svgEl("text",{class:"timeline-label",x:Math.min(955,index*1000/6+3),y:68},format.format(time)));}
+  svg.replaceChildren(...bars);$("#timeline-start").disabled=$("#timeline-end").disabled=data.start==null;
+  const span=data.end-data.start||1;
+  $("#timeline-start").value=state.timelineRange?Math.max(0,(state.timelineRange[0]-data.start)/span*100):0;$("#timeline-end").value=state.timelineRange?Math.min(100,(state.timelineRange[1]-data.start)/span*100):100;
+  $("#timeline-range-label").textContent=data.start==null?`No dated transactions · ${data.undatedCount} undated`:state.timelineRange?`${dateTime(state.timelineRange[0])} — ${dateTime(state.timelineRange[1])}`:`${edges.length} records · ${data.undatedCount} undated · all loaded activity`;
+}
+let timelineFilterTimer;
+function filterTimeline(){
+  const data=state.timelineData;if(data?.start==null)return;
+  let start=Number($("#timeline-start").value),end=Number($("#timeline-end").value);
+  if(start>=end){if(document.activeElement===$("#timeline-start"))start=Math.max(0,end-1);else end=Math.min(100,start+1);}
+  $("#timeline-start").value=start;$("#timeline-end").value=end;
+  state.timelineRange=start===0&&end===100?null:[data.start+(data.end-data.start)*start/100,data.start+(data.end-data.start)*end/100];
+  clearTimeout(timelineFilterTimer);timelineFilterTimer=setTimeout(()=>{if(state.graph){stopAnimation();renderGraph();fitGraph();}},80);
+}
+function renderEntitySearch(){
+  const query=$("#entity-search").value.trim().toLowerCase(),results=$("#entity-search-results");
+  if(!query||!state.graph){results.hidden=true;return;}
+  const matches=state.graph.nodes.filter(node=>[node.label,node.address,node.account,node.asset,node.entity_label,node.metadata?.public_entity?.label].some(value=>String(value||"").toLowerCase().includes(query))||state.graph.edges.some(edge=>[edge.source,edge.target].includes(node.id)&&String(edge.asset||"").toLowerCase()===query)).slice(0,12);
+  results.replaceChildren(...matches.map(node=>{const button=el("button","",`${node.metadata?.public_entity?.label||node.label||node.id} · ${short(node.address||node.account||node.chain,20)}`);button.type="button";button.setAttribute("role","option");button.addEventListener("click",()=>{results.hidden=true;setFocalNode(node.id);});return button;}));
+  if(!matches.length)results.append(el("p","","Not in this trace. Use Live Scanner to load another address."));results.hidden=false;
 }
 
 const dragState = { active: false, moved: false, startX: 0, startY: 0, originX: 0, originY: 0, nodeId: null, edgeId: null };
@@ -1291,28 +1341,31 @@ function svgPoint(event) {
   return matrix ? point.matrixTransform(matrix.inverse()) : point;
 }
 
-$("#graph").addEventListener("pointerdown", (event) => {
-  if (event.button !== 0) return;
-  const point = svgPoint(event);
-  Object.assign(dragState, { active: true, moved: false, startX: point.x, startY: point.y, originX: state.x, originY: state.y, nodeId: event.target.closest(".node")?.dataset.nodeId || null, edgeId: event.target.closest(".edge-group")?.dataset.edgeId || null });
+function bindD3Interactions(){
+  state.usingD3=Boolean(window.d3?.drag&&window.d3?.zoom);if(!state.usingD3){state.zoomBehavior=null;return;}
+  const d3=window.d3,svg=d3.select($("#graph"));
+  state.zoomBehavior=d3.zoom().scaleExtent([.01,4]).filter(event=>event.type==="wheel"||(!event.button&&!event.target.closest(".node,.edge-group"))).on("zoom",event=>{if(event.sourceEvent)state.autoFit=false;state.x=event.transform.x;state.y=event.transform.y;state.scale=event.transform.k;updateTransform(true);});
+  svg.call(state.zoomBehavior).on("dblclick.zoom",null);
+  d3.select($("#nodes")).selectAll(".node").datum(function(){return state.positions.get(this.dataset.nodeId);}).call(d3.drag().container($("#viewport")).clickDistance(4).on("start",(event,node)=>{event.sourceEvent.stopPropagation();dragState.moved=false;dragState.startX=node.x;dragState.startY=node.y;}).on("drag",(event,node)=>{if(Math.hypot(event.x-dragState.startX,event.y-dragState.startY)>3){dragState.moved=true;movePinnedNode(node.id,event.x,event.y);}}).on("end",(event,node)=>{if(dragState.moved)selectNode(node.id,false);}));
+}
+$("#graph").addEventListener("pointerdown",event=>{
+  if(state.usingD3){dragState.moved=false;return;}if(event.button!==0)return;const point=svgPoint(event);
+  Object.assign(dragState,{active:true,moved:false,startX:point.x,startY:point.y,originX:state.x,originY:state.y,nodeId:event.target.closest(".node")?.dataset.nodeId||null,edgeId:event.target.closest(".edge-group")?.dataset.edgeId||null});
+  const node=state.positions.get(dragState.nodeId);dragState.nodeStartX=node?.x;dragState.nodeStartY=node?.y;
   $("#graph").setPointerCapture(event.pointerId);
 });
-$("#graph").addEventListener("pointermove", (event) => {
-  if (!dragState.active) return;
-  const point = svgPoint(event), dx = point.x - dragState.startX, dy = point.y - dragState.startY;
-  if (Math.abs(dx) + Math.abs(dy) > 5) dragState.moved = true;
-  if (dragState.moved) { state.x = dragState.originX + dx; state.y = dragState.originY + dy; updateTransform(); }
+$("#graph").addEventListener("pointermove",event=>{
+  if(state.usingD3||!dragState.active)return;const point=svgPoint(event),dx=point.x-dragState.startX,dy=point.y-dragState.startY;
+  if(Math.abs(dx)+Math.abs(dy)>4)dragState.moved=true;
+  if(dragState.moved){if(dragState.nodeId)movePinnedNode(dragState.nodeId,dragState.nodeStartX+dx/state.scale,dragState.nodeStartY+dy/state.scale);else{state.x=dragState.originX+dx;state.y=dragState.originY+dy;updateTransform();}}
 });
-$("#graph").addEventListener("pointerup", (event) => {
-  dragState.active = false;
-  if ($("#graph").hasPointerCapture(event.pointerId)) $("#graph").releasePointerCapture(event.pointerId);
-  if (!dragState.moved) {
-    if (dragState.nodeId) selectNode(dragState.nodeId);
-    else if (dragState.edgeId) selectEdge(dragState.edgeId);
-  }
+$("#graph").addEventListener("pointerup",event=>{
+  if(state.usingD3)return;dragState.active=false;if($("#graph").hasPointerCapture(event.pointerId))$("#graph").releasePointerCapture(event.pointerId);
+  if(!dragState.moved){if(dragState.nodeId)selectNode(dragState.nodeId);else if(dragState.edgeId)selectEdge(dragState.edgeId);}
+  else if(dragState.nodeId)selectNode(dragState.nodeId,false);
 });
-$("#graph").addEventListener("pointercancel", () => { dragState.active = false; });
-$("#graph").addEventListener("wheel", (event) => { if (!event.ctrlKey && !event.metaKey) return; event.preventDefault(); zoom(event.deltaY < 0 ? 1.1 : 1 / 1.1, svgPoint(event)); }, { passive: false });
+$("#graph").addEventListener("pointercancel",()=>dragState.active=false);
+$("#graph").addEventListener("wheel",event=>{if(state.usingD3)return;event.preventDefault();zoom(event.deltaY<0?1.1:1/1.1,svgPoint(event));},{passive:false});
 $("#live-form").addEventListener("submit", (event) => { event.preventDefault(); traceLive(); });
 for (const mode of ["scenario", "live"]) {
   $(`#${mode}-tab`).addEventListener("click", () => setMode(mode));
@@ -1388,10 +1441,25 @@ $("#manual-button").addEventListener("click", () => {
   drawScenarios();
   trace();
 });
+$("#d3-library").addEventListener("load",()=>{if(state.graph&&!state.usingD3){renderGraph();fitGraph();}});
 $("#zoom-in").addEventListener("click", () => zoom(1.2));
 $("#zoom-out").addEventListener("click", () => zoom(1 / 1.2));
-$("#fit-button").addEventListener("click", fitGraph);
-$("#graph-scroll").addEventListener("scroll", updateTransform, { passive: true });
+$("#fit-button").addEventListener("click",()=>{state.autoFit=true;fitGraph();});
+$("#more-info-button").addEventListener("click",()=>{if($("#inspector-drawer").hidden&&!state.selected&&state.focalId)selectNode(state.focalId);else openInspector($("#inspector-drawer").hidden);});
+$("#inspector-close").addEventListener("click",()=>{openInspector(false);$("#more-info-button").focus();});
+$("#inspector-drawer").addEventListener("keydown",event=>{if(event.key==="Escape"){openInspector(false);$("#more-info-button").focus();}});
+$("#value-filter-pill").addEventListener("click",()=>{state.focusMainPath=!state.focusMainPath;$("#focus-main-path").checked=state.focusMainPath;$("#value-filter-pill").setAttribute("aria-pressed",String(state.focusMainPath));if(state.graph){renderGraph();fitGraph();}});
+$("#flow-filter-pill").addEventListener("click",()=>{state.flowMode={ALL:"IN",IN:"OUT",OUT:"ALL"}[state.flowMode];$("#flow-filter-pill").textContent={ALL:"FLOW ALL",IN:"INFLOWS ONLY (GREEN)",OUT:"OUTFLOWS ONLY (RED)"}[state.flowMode];if(state.graph){renderGraph();fitGraph();}});
+$("#sort-time-pill").addEventListener("click",()=>{state.sortTime=!state.sortTime;$("#sort-time-pill").setAttribute("aria-pressed",String(state.sortTime));$("#sort-time-pill").textContent=state.sortTime?"SORT BY TIME":"DEFAULT ORDER";if(state.graph)renderGraph();});
+$("#owner-chain-toggle").addEventListener("change",event=>{state.groupMode=event.target.checked?"OWNER":"CHAIN";$("#group-mode-label").textContent=`GROUP BY ${state.groupMode}`;if(state.graph){renderGraph();fitGraph();}});
+$("#clear-focal-button").addEventListener("click",()=>{state.focalId=state.initialFocalId || null;if(state.graph){renderGraph();fitGraph();selectNode(state.focalId,false);}});
+$("#freeze-layout-button").addEventListener("click",()=>{state.physicsFrozen=!state.physicsFrozen;state.graphEngine?.setFrozen(state.physicsFrozen);$("#freeze-layout-button").setAttribute("aria-pressed",String(state.physicsFrozen));$("#freeze-layout-button").title=state.physicsFrozen?"Unlock Physics Simulation":"Freeze Layout";$("#visualizer-status").textContent+=state.physicsFrozen?" · layout frozen":" · physics resumed";});
+$("#pointer-mode").addEventListener("click",()=>{state.selected=null;state.selectedEdge=null;highlightGraphSelection();$("#pointer-mode").setAttribute("aria-pressed","true");});
+$("#entity-search").addEventListener("input",renderEntitySearch);
+$("#entity-search").addEventListener("keydown",event=>{if(["Enter","ArrowDown"].includes(event.key)){event.preventDefault();const first=$("#entity-search-results button");if(first){if(event.key==="Enter")first.click();else first.focus();}}else if(event.key==="Escape")$("#entity-search-results").hidden=true;});
+for(const id of ["timeline-start","timeline-end"])$("#"+id).addEventListener("input",filterTimeline);
+$("#timeline-reset").addEventListener("click",()=>{clearTimeout(timelineFilterTimer);state.timelineRange=null;if(state.graph){renderGraph();fitGraph();}});
+
 $("#flow-view-button").addEventListener("click", () => setInvestigationView("flow"));
 $("#audit-view-button").addEventListener("click", () => setInvestigationView("audit"));
 $("#focus-main-path").addEventListener("change", (event) => {
@@ -1427,6 +1495,7 @@ for (const button of document.querySelectorAll("#time-range button")) {
 for (const [id, target, mode] of [["nav-graph", ".graph-panel"], ["nav-cases", "#case-controls", "scenario"], ["nav-addresses", "#case-controls", "live"], ["nav-evidence", ".right-panel"]]) {
   $(`#${id}`)?.addEventListener("click", () => {
     if (mode) setMode(mode);
+    if (id === "nav-evidence") openInspector();
     for (const nav of document.querySelectorAll(".main-navigation button")) { const active = nav.id === id; nav.setAttribute("aria-current", active ? "page" : "false"); nav.classList.toggle("active", active); }
     $(target)?.scrollIntoView({ block: "start", behavior: "smooth" });
     if (id === "nav-addresses") $("#live-wallet").focus({ preventScroll: true });
@@ -1467,12 +1536,16 @@ function applyTheme(theme) {
   $("#theme-toggle").textContent = light ? "☾ Dark" : "☀ Light";
   $("#theme-toggle").setAttribute("aria-label", light ? "Aktifkan Dark mode" : "Aktifkan Light mode");
   $("#theme-toggle").setAttribute("aria-pressed", String(light));
+  const graphToggle=$("#graph-theme-toggle");
+  if(graphToggle){graphToggle.textContent=light?"☾":"☀";graphToggle.setAttribute("aria-label",light?"Aktifkan Dark mode":"Aktifkan Light mode");graphToggle.setAttribute("aria-pressed",String(light));graphToggle.title=light?"Dark graph":"Light graph";}
 }
 let savedTheme;
 try { savedTheme = localStorage.getItem("crypto-trails-theme"); } catch {}
 applyTheme(savedTheme === "light" || savedTheme === "dark" ? savedTheme : window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
-$("#theme-toggle").addEventListener("click", () => {
+function toggleTheme() {
   const theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
   applyTheme(theme);
   try { localStorage.setItem("crypto-trails-theme", theme); } catch {}
-});
+}
+$("#theme-toggle").addEventListener("click", toggleTheme);
+$("#graph-theme-toggle")?.addEventListener("click", toggleTheme);
