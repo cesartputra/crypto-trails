@@ -158,10 +158,14 @@ const ForensicGraph = (() => {
       const first = bundle.members[0];
       const fiat = bundle.members.reduce((sum, item) => sum + positive(item.amount_idr), 0);
       const usd = bundle.members.reduce((sum, item) => sum + positive(item.amount_usd ?? item.usd_amount ?? item.metadata?.amount_usd), 0);
-      return { ...first, id: `flow:${encodeURIComponent(bundle.source)}:${encodeURIComponent(bundle.target)}`, source: bundle.source, target: bundle.target,
+      const result = { ...first, id: `flow:${encodeURIComponent(bundle.source)}:${encodeURIComponent(bundle.target)}`, source: bundle.source, target: bundle.target,
         members: bundle.members, totals, asset: primary?.asset || first.asset || '', crypto_amount: primary?.amount || 0, chain: primary?.chain || first.chain || '',
         ...(primary?.contract ? { contract: primary.contract } : {}), amount_idr: Number.isFinite(fiat) ? fiat : 0, amount_usd: Number.isFinite(usd) ? usd : 0,
         transaction_count: bundle.members.length, candidate: uncertain, metadata: { ...first.metadata, is_candidate: uncertain }, critical: false, width: 2 };
+      const stages = new Set(bundle.members.map(chronology));
+      if (stages.size === 1 && !stages.has(null)) result.chronological_step = [...stages][0];
+      else for (const name of ['chronological_step', 'hop_order', 'animation_order']) { delete result[name]; delete result.metadata[name]; }
+      return result;
     }).sort(compareId);
     const scales = new Map();
     const valueFor = bundle => bundle.amount_idr > 0 ? { key: 'IDR', amount: bundle.amount_idr } : bundle.amount_usd > 0 ? { key: 'USD', amount: bundle.amount_usd } : { key: identity(bundle), amount: bundle.crypto_amount };
@@ -194,12 +198,95 @@ const ForensicGraph = (() => {
   }
 
   const timeOrder = (a, b) => (evidenceTime(a) ?? Infinity) - (evidenceTime(b) ?? Infinity) || compareId(a, b);
+  const chronology = record => {
+    let zero = null;
+    for (const name of ['chronological_step', 'hop_order', 'animation_order']) {
+      for (const value of [record?.[name], record?.metadata?.[name]]) {
+        const order = hopNumber(value);
+        if (order > 0) return order;
+        if (order === 0) zero = 0;
+      }
+    }
+    return zero;
+  };
+
+  function animationSteps(graph) {
+    const records = [], seen = new Set();
+    function collect(edge) {
+      if (seen.has(edge)) return;
+      seen.add(edge);
+      if (edge.members?.length) edge.members.forEach(collect);
+      else records.push(edge);
+    }
+    (graph.edges || graph.links || []).forEach(collect);
+    records.sort(timeOrder);
+    const nodes = graph.nodes || [], byId = new Map(nodes.map(node => [node.id, node]));
+    const victim = node => /VICTIM/.test(String(node?.node_type || '').toUpperCase()) || node?.metadata?.is_victim_origin === true;
+    const nodeStage = node => chronology(node) > 0 ? chronology(node) : victim(node) ? 0 : null;
+    const onchain = node => node?.node_zone ? node.node_zone === 'ONCHAIN_WALLET' : Boolean(node?.address || node?.wallet_address || chain(node || {}));
+    const intake = node => /PAKD|P2P|GATEWAY|FIAT_DEPOSIT|CONVERSION|ESCROW/.test(attributedType(node || {})) && !onchain(node);
+    const terminal = node => isExchange(node || {}) || /DEPOSIT|CASHOUT|OFFRAMP/.test(attributedType(node || {}));
+    const outgoing = new Map(), incoming = new Set();
+    for (const edge of records) {
+      if (!outgoing.has(edge.source)) outgoing.set(edge.source, []);
+      outgoing.get(edge.source).push(edge.target); incoming.add(edge.target);
+    }
+    const victims = nodes.filter(victim).map(node => node.id).sort();
+    const roots = victims.length ? victims : [...outgoing.keys()].filter(id => !incoming.has(id)).sort();
+    if (!roots.length && records.length) roots.push(records[0].source);
+    const depth = new Map(roots.map(id => [id, 0]));
+    for (const node of nodes) if (nodeStage(node) != null) depth.set(node.id, nodeStage(node));
+    const queue = [...depth.keys()];
+    for (let index = 0; index < queue.length; index++) for (const id of outgoing.get(queue[index]) || []) {
+      const next = depth.get(queue[index]) + 1;
+      if (nodeStage(byId.get(id)) == null && next < (depth.get(id) ?? Infinity)) { depth.set(id, next); queue.push(id); }
+    }
+    const returned = new Map();
+    for (const edge of records) if (onchain(byId.get(edge.source)) && !terminal(byId.get(edge.source)) && (intake(byId.get(edge.target)) || terminal(byId.get(edge.target)))) {
+      const order = Math.max(6, (depth.get(edge.source) ?? 5) + 1);
+      returned.set(edge.target, Math.min(returned.get(edge.target) ?? Infinity, order));
+    }
+    const returnQueue = [...returned.keys()];
+    for (let index = 0; index < returnQueue.length; index++) for (const id of outgoing.get(returnQueue[index]) || []) {
+      const order = returned.get(returnQueue[index]);
+      if (!onchain(byId.get(id)) && order < (returned.get(id) ?? Infinity)) { returned.set(id, order); returnQueue.push(id); }
+    }
+    function inferred(edge) {
+      const source = byId.get(edge.source), target = byId.get(edge.target);
+      const from = nodeStage(source), to = nodeStage(target);
+      if (victim(source)) return 1;
+      if (from != null && to != null) return to > from ? to : from === 3 && !onchain(source) && !onchain(target) ? 3 : Math.min(6, from + 1);
+      if (returned.has(edge.source) && terminal(source)) return returned.get(edge.source);
+      if (onchain(source) && (intake(target) || terminal(target))) return Math.max(6, (depth.get(edge.source) ?? 5) + 1);
+      if (!onchain(source) && onchain(target)) return 4;
+      if (returned.has(edge.source) && !onchain(source)) return returned.get(edge.source);
+      if (intake(source) || intake(target)) return 3;
+      if (victims.length && onchain(source) && onchain(target)) return Math.max(5, (depth.get(edge.source) ?? 4) + 1);
+      return Math.max(1, (depth.get(edge.source) ?? 0) + 1);
+    }
+    const labels = ['Inisiasi scam: Korban → Scammer Pertama', 'Pecahan dana: Scammer → Bank Mules', 'Konsolidasi: Bank Mules → Akun PAKD (VA & P2P)', 'Penarikan: Akun PAKD → Wallet Hop 1', 'Layering: Wallet Hop 1 → Wallet Hop 2', 'Loopback: Wallet → Akun PAKD yang sama'];
+    const groups = new Map();
+    for (const edge of records) {
+      const explicit = chronology(edge), order = explicit != null && explicit > 0 ? explicit : inferred(edge);
+      if (!groups.has(order)) groups.set(order, []);
+      groups.get(order).push(edge);
+    }
+    const withdrawalAccounts = new Set((groups.get(4) || []).filter(edge => onchain(byId.get(edge.target))).map(edge => edge.source));
+    return [...groups].sort(([a], [b]) => a - b).map(([order, edges]) => {
+      const sameAccount = edges.every(edge => onchain(byId.get(edge.source)) && (edge.metadata?.same_uid_loopback === true || intake(byId.get(edge.target)) && withdrawalAccounts.has(edge.target)));
+      return { order, label: sameAccount ? labels[5] : order === 6 ? 'Layering / transfer lanjutan' : victims.length && labels[order - 1] || `Tahap ${order}`, edges,
+        sourceIds: [...new Set(edges.map(edge => edge.source))], targetIds: [...new Set(edges.map(edge => edge.target))] };
+    });
+  }
+
   const trustedName = node => node.metadata?.public_entity?.label || node.metadata?.public_entity?.name || (/EXCHANGE|CUSTODIAL|CUSTODY|BRIDGE|DEX|ROUTER|PAKD|PUJK/.test(attributedType(node)) && !/UNATTRIBUTED|UNKNOWN/.test(attributedType(node)) ? node.entity_name || node.entity_label || node.metadata?.entity_name || node.metadata?.entity_label || node.label : '');
 
   function label(node) {
     const known = node.cluster_members ? node.label : trustedName(node) || (role(node) === 'source' ? node.label : '');
     const addressLabel = /^(?:0x[0-9a-fA-F]{16,}|[1-9A-HJ-NP-Za-km-z]{26,90}|bc1[a-zA-Z0-9]{20,})$/.test(node.label || '') ? node.label : '';
     const text = String(known || node.address || node.wallet_address || node.metadata?.address || addressLabel || node.id || node.label || '').replace(/[<>]/g, '').replace(/\s+/g, ' ').trim();
+    const mule = node.node_zone === 'FIAT_BANK' && /^bank mule \d+\b/i.exec(text);
+    if (mule) return mule[0].toLowerCase();
     return known ? (text.length > 13 ? `${text.slice(0, 10)}...` : text).toLowerCase() : text.length > 14 ? `${text.slice(0, 7)}...${text.slice(-4)}` : text;
   }
 
@@ -337,5 +424,5 @@ const ForensicGraph = (() => {
     }
     return { positions, width: 1130, height: Math.max(480, 212 + (Math.max(...counts, 1) - 1) * 194), cardWidth: 210, cardHeight: 84, columns };
   }
-  return { project, layout, role, amountSummary, isExchange, visualize, timeline, label };
+  return { project, layout, role, amountSummary, isExchange, visualize, timeline, label, animationSteps };
 })();

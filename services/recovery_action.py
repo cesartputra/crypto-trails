@@ -19,6 +19,8 @@ def plan_governance_requests(scenario, nodes):
     requests = []
     ramp = scenario["onramp"]
     for node in nodes:
+        if scenario.get("same_uid_loopback") and node.id != "scammer-uid":
+            continue
         category, institution, scope, available = None, None, "ACCOUNT_BALANCE", D(0)
         crypto = D(0)
         if node.node_type == "MULE":
@@ -28,6 +30,10 @@ def plan_governance_requests(scenario, nodes):
             available = min(D(node.metadata["available_balance_idr"]), D(node.metadata["attributed_available_balance_idr"]))
         elif node.node_type == "PAKD_USER_ACCOUNT":
             category, institution = "PAKD", node.entity_label
+            if scenario.get("same_uid_loopback"):
+                scope = "UNIFIED_PAKD_ACCOUNT"
+                crypto = D(node.metadata["tainted_balance_crypto"])
+                available = crypto * RATE
         elif node.node_type == "P2P_ESCROW":
             category, institution, scope = "PAKD", node.entity_label, "TARGETED_ESCROW"
             available = D(ramp.get("held_escrow_idr", "0"))

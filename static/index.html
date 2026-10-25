@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#f5f4f0">
   <title>Crypto Trails · Intelligence Workspace</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%2325241f'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='2'%3E%3Ccircle cx='12' cy='11' r='4'/%3E%3Ccircle cx='29' cy='15' r='4'/%3E%3Ccircle cx='14' cy='30' r='4'/%3E%3Cpath d='m16 12 9 2M13 15l1 11m4 2 8-10'/%3E%3C/g%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/static/styles.css?v=20261025-arkham-final">
+  <link rel="stylesheet" href="/static/styles.css?v=20261025-chronology">
   <script id="d3-library" src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js" async></script>
-  <script src="/static/arkham_engine.js?v=20261025-arkham-final" defer></script>
-  <script src="/static/forensic_graph.js?v=20261025-arkham-final" defer></script>
-  <script src="/static/app.js?v=20261025-arkham-final" defer></script>
+  <script src="/static/arkham_engine.js?v=20261025-chronology" defer></script>
+  <script src="/static/forensic_graph.js?v=20261025-chronology" defer></script>
+  <script src="/static/app.js?v=20261025-chronology" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -158,9 +158,9 @@
             <svg id="activity-timeline" viewBox="0 0 1000 76" preserveAspectRatio="none" role="img" aria-label="Histogram aktivitas transaksi per waktu"></svg>
             <div class="timeline-range"><input id="timeline-start" type="range" min="0" max="100" value="0" step="1" aria-label="Start time · Awal rentang waktu"><input id="timeline-end" type="range" min="0" max="100" value="100" step="1" aria-label="End time · Akhir rentang waktu"></div>
           </section>
-          <div id="animation-step" class="animation-step" hidden></div>
+          <div id="animation-step" class="animation-step" role="status" aria-live="polite" hidden></div>
         </div>
-        <div class="graph-footer"><div class="legend network-legend" aria-label="Arah aliran dana"><span><i class="flow-inflow" aria-hidden="true"></i> Inflow</span><span><i class="flow-outflow" aria-hidden="true"></i> Outflow</span><span><i class="flow-candidate" aria-hidden="true"></i> Candidate / atribusi belum pasti</span><span class="graph-interaction-note">Drag untuk pin · Klik ganda untuk unlock</span></div><button id="animate-button" class="button subtle" type="button"><span>▷</span> Animasi aliran dana</button></div>
+        <div class="graph-footer"><div class="legend network-legend" aria-label="Arah aliran dana"><span><i class="flow-inflow" aria-hidden="true"></i> Inflow</span><span><i class="flow-outflow" aria-hidden="true"></i> Outflow</span><span><i class="flow-candidate" aria-hidden="true"></i> Candidate / atribusi belum pasti</span><span class="graph-interaction-note">Drag untuk pin · Klik ganda untuk unlock</span></div><div class="flow-playback-controls" role="group" aria-label="Tahapan kronologis aliran dana"><button id="flow-prev-step" class="button subtle" type="button" aria-label="Langkah sebelumnya" disabled>←</button><span id="flow-step-label" role="status" aria-live="polite">0 tahap</span><button id="flow-next-step" class="button subtle" type="button" aria-label="Langkah berikutnya" disabled>Langkah berikutnya →</button><button id="animate-button" class="button subtle" type="button"><span>▷</span> Animasi aliran dana</button></div></div>
         </div>
         <section id="audit-trail-view" class="audit-trail-view" aria-label="Urutan jejak hop-by-hop" hidden>
           <div class="audit-table-scroll" tabindex="0" role="region" aria-label="Tabel audit jejak dana; gulir untuk melihat seluruh kolom">

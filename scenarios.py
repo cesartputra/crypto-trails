@@ -207,7 +207,7 @@ def fixtures():
             chain_tx(f"bridge-{index}-loopback","w1","deposit","7500",260,chain=destination)]
         bridge_presets.append(scenario)
     dispersal = multichain_dispersal_fixture()
-    all_scenarios = (dispersal, s1, s2, s3, s4, *bridge_presets)
+    all_scenarios = (double_diamond_fixture(), dispersal, s1, s2, s3, s4, *bridge_presets)
     for scenario in all_scenarios:
         if "chain_dispersals" not in scenario:
             ramp = scenario["onramp"]
@@ -282,6 +282,83 @@ def multichain_dispersal_fixture():
         "handoff":h,"accounts":a,"onramp":ramp,"chain_dispersals":branches,"wallets":wallets,"chain_ledger":ledger,"p2p_orders":[],"probability":"86",
         "fna_snapshot":{"fna_trail_id":h["fna_trail_id"],"nodes":a[:3],"edges":[bank_tx("disp-bank-1","victim","mule1","180000000",0),bank_tx("disp-bank-2","mule1","va","180000000",40)],"source":"SYNTHETIC_FNA_HANDOFF_SNAPSHOT","bank_traversal_performed_here":False},
         "pakd_intake_ledger":[{"intake_id":"PAKD-IN-DISP-001","rrn_reference_number":h["rrn_reference_number"],"gateway_account":h["pakd_gateway_va_or_account"],"fiat_amount_idr":"180000000","timestamp":stamp(40),"pakd_name":"Tokocrypto","pakd_user_uid":ramp["uid"],"intake_mechanism":"DIRECT_VA_DEPOSIT"}]}
+
+
+
+def double_diamond_fixture():
+    case_id, uid = "double-diamond-loopback", "TKO-9988112"
+    accounts = [
+        account("victim", "Rekening Korban (BNI - 0192837465)", "BNI", "0192837465", "VICTIM", chronological_step=0),
+        account("primary", "Rekening Scammer Utama Tier-1 (BCA - 8810293847 a.n. Sindikat Utama)", "BCA", "8810293847", chronological_step=1),
+    ]
+    intakes, orders = [], []
+    for index, bank, number, amount in ((1, "Mandiri", "13000998811", "80000000"),
+            (2, "BRI", "034101002233", "75000000"), (3, "Permata", "4120088776", "75000000"),
+            (4, "CIMB Niaga", "7055443322", "70000000")):
+        source = f"mule{index}"
+        accounts.append(account(source, f"Bank Mule {index} ({bank} - {number})", bank, number, chronological_step=2))
+        mechanism = "DIRECT_VA_DEPOSIT" if index <= 2 else "P2P_ON_RAMP_ESCROW"
+        gateway = f"88080099881{index}" if index <= 2 else f"77000099881{index}"
+        rrn = f"RRN-DOUBLE-{index}"
+        intakes.append({"intake_id": f"DD-IN-{index}", "source_node_id": source, "gateway_account": gateway,
+            "rrn_reference_number": rrn, "fiat_amount_idr": amount, "crypto_amount": str(D(amount)/RATE),
+            "timestamp": stamp(55 + index*5), "pakd_name": "Tokocrypto", "pakd_user_uid": uid,
+            "intake_mechanism": mechanism})
+        if index > 2:
+            orders.append(p2p_order(f"DD-P2P-{index}", f"DD-MERCHANT-{index}", gateway, amount, str(D(amount)/RATE),
+                uid, "0x9988112000000000000000000000000000000009", 55+index*5,
+                platform="Tokocrypto", rrn_reference_number=rrn, source_node_id=source))
+    handoff = handoff_seed(case_id, "BNI", "300000000", accounts[0]["account"], accounts[1]["account"])
+    # This handoff is a composite FNA case summary, never an invented single bank posting.
+    handoff.update(last_fna_pujk_name="BCA", last_fna_account_number=accounts[1]["account"],
+        pakd_gateway_va_or_account=uid, fiat_transfer_timestamp=stamp(75), rrn_reference_number="RRN-DOUBLE-SUMMARY")
+    ramp = {"kind": "MIXED", "uid": uid, "platform": "Tokocrypto", "initial_wallet": "hop1a",
+        "crypto_amount": "18750", "fiat_amount_idr": "300000000", "chain": "ETHEREUM_ERC20", "asset": "USDT",
+        "withdrawal_timestamp": stamp(120), "withdrawal_tx_hash": "0x"+sha256(b"DD-WD-a").hexdigest(),
+        "kyc": {"name": "Identitas Sindikat Utama Demo", "nik_masked": "3171********0009",
+                "document_ref": "KYC-SYNTH-DD", "status": "SYNTHETIC_VERIFIED"}}
+    wallets, withdrawals = [], []
+    for index, letter, prefix, suffix, amount in ((0,"a","71C8","10a1","5000"), (1,"b","82D9","20b2","4750"),
+            (2,"c","93EA","30c3","4500"), (3,"d","A4FB","40d4","4500")):
+        address = "0x"+prefix+"0"*32+suffix
+        wallets.append(wallet("hop1"+letter, address, f"ETH Wallet Hop-1{letter.upper()} (0x{prefix}...{suffix})", chronological_step=4))
+        withdrawals.append({"withdrawal_id": "DD-WD-"+letter, "chain": "ETHEREUM", "chain_family": "EVM",
+            "scanner_provider": "ETHERSCAN_V2", "token_symbol": "USDT", "crypto_amount": amount,
+            "fiat_value_idr": str(D(amount)*RATE), "initial_wallet_address": address,
+            "withdrawal_tx_hash": "0x"+sha256(("DD-WD-"+letter).encode()).hexdigest(),
+            "withdrawal_timestamp": stamp(120+index), "initial_node_id": "hop1"+letter,
+            "endpoint_node_id": "scammer-uid", "endpoint_status": "SAME_UID_FULL_CIRCLE_LOOPBACK"})
+    for letter, prefix, suffix in (("a","B501","50e5"), ("b","C612","60f6"), ("c","D723","70a7"), ("d","E834","80b8")):
+        wallets.append(wallet("hop2"+letter, "0x"+prefix+"0"*32+suffix,
+            f"ETH Wallet Hop-2{letter.upper()} (0x{prefix}...{suffix})", chronological_step=5))
+    wallets.append(wallet("scammer-uid", "0x9988112000000000000000000000000000000009",
+        "Deposit Return · Akun PAKD Tokocrypto TKO-9988112", "DIRECT_EXCHANGE_DEPOSIT", balance="18750",
+        platform="Tokocrypto", uid=uid, kyc_nik_masked="3171********0009", recovery_institution="PAKD", chronological_step=3))
+    routes = [("a","a","3000"),("a","b","2000"),("b","b","2750"),("b","c","2000"),
+              ("c","c","2500"),("c","d","2000"),("d","d","2500"),("d","a","2000")]
+    ledger = []
+    for index, (source, target, amount) in enumerate(routes):
+        tx = chain_tx(f"DD-LAYER-{index}", "hop1"+source, "hop2"+target, amount, 180+index, chain="ETHEREUM_ERC20")
+        tx["chronological_step"] = 5
+        ledger.append(tx)
+    for index, letter, amount in ((0,"a","5000"),(1,"b","4750"),(2,"c","4500"),(3,"d","4500")):
+        tx = chain_tx("DD-RETURN-"+letter, "hop2"+letter, "scammer-uid", amount, 240+index, chain="ETHEREUM_ERC20")
+        tx.update(chronological_step=6, same_uid_loopback=True)
+        ledger.append(tx)
+    return {"id": case_id, "title": "Skenario Konvergensi & Loopback: Korban ➔ Scammer ➔ Banyak Bank Mule ➔ 1 Akun PAKD (VA & P2P) ➔ Banyak Wallet ETH (Multi-Hop) ➔ Kembali ke 1 Akun PAKD",
+        "description": "Pola Berlian Ganda: Rp300 juta, 4 bank mule, 2 VA + 2 P2P, 4 wallet ETH Hop 1 dan 4 Hop 2; 100% kembali ke UID Tokocrypto yang sama. Satu rekomendasi freeze terpadu, belum dikirim.",
+        "converging_intakes": intakes, "same_uid_loopback": True, "accounts": accounts, "handoff": handoff,
+        "fna_snapshot": {"fna_trail_id": handoff["fna_trail_id"], "nodes": accounts,
+            "edges": [bank_tx("DD-BANK-ORIGIN", "victim", "primary", "300000000", 0),
+                *[bank_tx(f"DD-BANK-{i}", "primary", item["source_node_id"], item["fiat_amount_idr"], 30+i)
+                  for i, item in enumerate(intakes, 1)]],
+            "source": "SYNTHETIC_FNA_HANDOFF_SNAPSHOT", "bank_traversal_performed_here": False,
+            "handoff_scope": "COMPOSITE_CASE_SUMMARY"},
+        "pakd_intake_ledger": [{"intake_id": "DD-IN-SUMMARY", "rrn_reference_number": handoff["rrn_reference_number"],
+            "gateway_account": uid, "fiat_amount_idr": "300000000", "timestamp": stamp(75), "pakd_name": "Tokocrypto",
+            "pakd_user_uid": uid, "intake_mechanism": "COMPOSITE_VA_P2P_INFLOW"}],
+        "onramp": ramp, "p2p_orders": orders, "wallets": wallets, "chain_ledger": ledger,
+        "chain_dispersals": withdrawals, "probability": "94"}
 
 
 

@@ -38,6 +38,8 @@ class P2PAndPAKDBridge:
         ramp = scenario["onramp"]
         match = await self.consumer.consume_pakd_inflow_lookup_api(handoff.pakd_gateway_va_or_account,
             handoff.rrn_reference_number, handoff.fiat_transfer_amount_idr, pakd_code=ramp["platform"])
+        if scenario.get("converging_intakes"):
+            return self._resolve_converging_onramp(handoff, scenario, intake, match, nodes, edges)
         if scenario.get("multi_chain_dispersal"):
             return self._resolve_dispersal_onramp(handoff, scenario, intake, match, nodes, edges)
         initial = next(w for w in scenario["wallets"] if w["id"] == ramp["initial_wallet"])
@@ -135,6 +137,8 @@ class P2PAndPAKDBridge:
         return detections, [record]
 
     async def resolve_offramp(self, scenario, nodes, edges):
+        if scenario.get("same_uid_loopback"):
+            return await self._resolve_same_uid_loopback(scenario, nodes, edges)
         if scenario.get("multi_chain_dispersal"):
             return await self._resolve_dispersal_offramp(scenario, nodes, edges)
         detections = []
@@ -235,6 +239,91 @@ class P2PAndPAKDBridge:
                 label=f"Rp {D(order['fiat_amount_idr']):,.0f} cash-out", amount_idr=D(order["fiat_amount_idr"]), timestamp=settlement["timestamp"],
                 metadata={"order_id": order["order_id"], "merchant_bank_account": order["merchant_bank_account"]})])
         return detections, records
+
+
+
+    def _resolve_converging_onramp(self, handoff, scenario, summary, match, nodes, edges):
+        ramp, branches = scenario["onramp"], scenario["chain_dispersals"]
+        actual = {row["withdrawal_id"]: row for row in match["withdrawals"]} if match else {}
+        if (not match or match["user_uid"] != ramp["uid"] or match["kyc_nik_masked"] != ramp["kyc"]["nik_masked"]
+            or set(actual) != {row["withdrawal_id"] for row in branches}):
+            raise ValueError("Respons scoped API tidak sesuai UID/KYC/cabang withdrawal konvergensi")
+        for branch in branches:
+            row = actual[branch["withdrawal_id"]]
+            if (any(row[field] != branch[field] for field in ("chain", "chain_family", "scanner_provider", "token_symbol", "withdrawal_tx_hash", "withdrawal_timestamp"))
+                or row["initial_wallet_address"].lower() != branch["initial_wallet_address"].lower()
+                or D(row["crypto_amount"]) != D(branch["crypto_amount"])
+                or D(row["fiat_value_idr"]) != D(branch["fiat_value_idr"])
+                or datetime.fromisoformat(row["withdrawal_timestamp"]) < handoff.fiat_transfer_timestamp):
+                raise ValueError("Bukti withdrawal komposit tidak sesuai respons scoped API")
+        if (sum((D(b["fiat_value_idr"]) for b in branches), D(0)) != handoff.fiat_transfer_amount_idr
+            or sum((D(i["fiat_amount_idr"]) for i in scenario["converging_intakes"]), D(0)) != handoff.fiat_transfer_amount_idr):
+            raise ValueError("Alokasi komposit tidak seimbang dengan nilai perkara")
+        evidence = {"evidence_source": SOURCE, "simulation": True, "fna_trail_id": handoff.fna_trail_id,
+            "handoff_scope": "COMPOSITE_CASE_SUMMARY", "mirror_deposit": match, "chronological_step": 3,
+            "uid": ramp["uid"], "same_pakd_account": True}
+        nodes.append(TrailNode(id="scammer-uid", label=f"Akun PAKD Tokocrypto (UID: {ramp['uid']} - NIK: {ramp['kyc']['nik_masked']})",
+            node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_USER_ACCOUNT", entity_label=ramp["platform"],
+            amount_idr=handoff.fiat_transfer_amount_idr, crypto_amount=D(ramp["crypto_amount"]), asset=ramp["asset"],
+            chain=ramp["chain"], hop=3, chronological_step=3,
+            metadata={**evidence, "architecture_zone": PAKD_ZONE, "kyc": {"name": match["kyc_name_masked"], "nik_masked": match["kyc_nik_masked"]}}))
+        records, detections = [], []
+        for index, intake in enumerate(scenario["converging_intakes"]):
+            if (intake["pakd_user_uid"] != ramp["uid"] or intake["pakd_name"] != ramp["platform"]
+                or D(intake["crypto_amount"]) * RATE != D(intake["fiat_amount_idr"])):
+                raise ValueError("Intake konvergensi tidak sesuai UID/platform/konversi")
+            mechanism = intake["intake_mechanism"]
+            local_evidence = {**evidence, **intake, "rrn_exact_match": True, "amount_exact_match": True,
+                "pooled_account_allocation": True, "chronological_step": 3}
+            if mechanism == "P2P_ON_RAMP_ESCROW":
+                orders = [order for order in scenario["p2p_orders"] if order["rrn_reference_number"] == intake["rrn_reference_number"]
+                    and order["source_node_id"] == intake["source_node_id"] and order["p2p_direction"] == "ON_RAMP_DEPOSIT"]
+                if len(orders) != 1:
+                    raise ValueError("Order P2P konvergensi harus unik")
+                order = orders[0]
+                if (order["scammer_uid"] != ramp["uid"] or order["merchant_bank_account"] != intake["gateway_account"]
+                    or D(order["fiat_amount_idr"]) != D(intake["fiat_amount_idr"])
+                    or D(order["crypto_amount_usdt"]) != D(intake["crypto_amount"])
+                    or not datetime.fromisoformat(intake["timestamp"]) <= datetime.fromisoformat(order["escrow_release_timestamp"]) <= handoff.fiat_transfer_timestamp):
+                    raise ValueError("Escrow P2P konvergensi tidak sesuai UID/nominal/waktu")
+                local_evidence["order_id"] = order["order_id"]
+                detections.append(P2PEscrowMatchDetail(**{k: v for k, v in order.items() if k in P2PEscrowMatchDetail.model_fields}, evidence=local_evidence))
+            elif mechanism != "DIRECT_VA_DEPOSIT":
+                raise ValueError("Mekanisme intake konvergensi tidak didukung")
+            edges.append(TrailEdge(id=intake["intake_id"], source=intake["source_node_id"], target="scammer-uid",
+                edge_type="DIRECT_VA_DEPOSIT" if mechanism == "DIRECT_VA_DEPOSIT" else "P2P_ESCROW_RELEASE",
+                label=("Direct VA" if mechanism == "DIRECT_VA_DEPOSIT" else "P2P escrow release")+f" · Rp {D(intake['fiat_amount_idr']):,.0f}",
+                amount_idr=D(intake["fiat_amount_idr"]), crypto_amount=D(intake["crypto_amount"]), asset=ramp["asset"],
+                timestamp=intake["timestamp"], chronological_step=3, metadata=local_evidence))
+            branch = branches[index]
+            records.append(PAKDInternalTrailRecord(record_id="PAKD-TRAIL-"+intake["intake_id"], target_node_id="scammer-uid",
+                pakd_name=ramp["platform"], intake_mechanism=mechanism, pakd_user_uid=ramp["uid"], kyc_nik_masked=ramp["kyc"]["nik_masked"],
+                fiat_in_idr=D(intake["fiat_amount_idr"]), crypto_purchased_token=ramp["asset"], crypto_purchased_amount=D(intake["crypto_amount"]),
+                remaining_pakd_balance_idr=D(0), withdrawal_status="WITHDRAWN_ONCHAIN", withdrawal_tx_hash=branch["withdrawal_tx_hash"],
+                blockchain_network=ramp["chain"], initial_wallet_address=branch["initial_wallet_address"],
+                metadata={**local_evidence, "withdrawals": branches, "withdrawal_attribution": "POOLED_ACCOUNT_NOT_ONE_TO_ONE"}))
+        return detections, records
+
+    async def _resolve_same_uid_loopback(self, scenario, nodes, edges):
+        ramp = scenario["onramp"]
+        account = next(n for n in nodes if n.id == "scammer-uid")
+        deposit = next(w for w in scenario["wallets"] if w["id"] == account.id)
+        match = await self.consumer.consume_pakd_wallet_reverse_lookup_api(deposit["address"], ramp["chain"], pakd_code=ramp["platform"])
+        returns = [e for e in edges if e.target == account.id and e.edge_type == "ONCHAIN_TRANSFER"]
+        returned = sum((e.crypto_amount for e in returns), D(0))
+        if (not match or match["wallet_type"] != "CUSTODIAL_DEPOSIT_ADDRESS" or match["pakd_name"] != ramp["platform"]
+            or match["user_uid"] != ramp["uid"] or match["nik_masked"] != ramp["kyc"]["nik_masked"]
+            or len(returns) != 4 or returned != D(ramp["crypto_amount"]) or account.balance_crypto != returned):
+            raise ValueError("Loopback tidak mengembalikan seluruh dana ke UID/KYC PAKD yang sama")
+        evidence = {"evidence_source": SOURCE, "simulation": True, "same_uid_loopback": True,
+            "full_circle_loopback_pct": "100", "returned_crypto_amount": str(returned), "chronological_step": 6,
+            "mirror_wallet": match, "deposit_address": deposit["address"], "inventory_counted_once": True}
+        account.metadata.update({**evidence, "chronological_step": 3})
+        return [], [PAKDInternalTrailRecord(record_id="PAKD-RETURN-"+ramp["uid"], target_node_id=account.id,
+            pakd_name=ramp["platform"], intake_mechanism="ONCHAIN_DEPOSIT", pakd_user_uid=ramp["uid"],
+            kyc_nik_masked=ramp["kyc"]["nik_masked"], fiat_in_idr=D(0), crypto_purchased_token=ramp["asset"],
+            crypto_purchased_amount=returned, remaining_pakd_balance_idr=returned*RATE,
+            withdrawal_status="STILL_IN_PAKD_WALLET", blockchain_network=ramp["chain"], metadata=evidence)]
 
 
     def _resolve_dispersal_onramp(self, handoff, scenario, intake, match, nodes, edges):

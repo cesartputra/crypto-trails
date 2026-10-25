@@ -87,6 +87,7 @@ class TrailNode(BaseModel):
     balance_crypto: Decimal = Field(default=Decimal(0), ge=0)
     status: str = "TRACED"
     hop: int = Field(default=0, ge=0)
+    chronological_step: int = Field(default=0, ge=0, strict=True)
     institution_decision: InstitutionFreezeDecision | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -111,6 +112,7 @@ class TrailEdge(BaseModel):
     chain_branch: str | None = None
     tx_hash: str | None = None
     timestamp: datetime | None = None
+    chronological_step: int = Field(default=0, ge=0, strict=True)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 class P2PEscrowMatchDetail(BaseModel):

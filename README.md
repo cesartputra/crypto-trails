@@ -168,7 +168,7 @@ Evidence packet memuat snapshot FNA, respons API PAKD, rincian withdrawal/cabang
 
 | Endpoint | Fungsi |
 | --- | --- |
-| `GET /api/v1/trail/scenarios` | Katalog kasus, default multi-chain dispersal |
+| `GET /api/v1/trail/scenarios` | Katalog kasus, default konvergensi & loopback berlian ganda |
 | `POST /api/v1/trail/trace-report` | Handoff FNA → API PAKD → graph + chain_dispersals |
 | `POST /api/v1/trail/live-scanner` | Unified scanner: wallet_address, source_chain, max_hops, token_filter, direction, etherscan_api_key?, auto_scan_cross_chain?, simulate_fna_and_mirror_origin? |
 | `POST /api/v1/trail/live-etherscan` | Alias kompatibilitas endpoint live sebelumnya |
@@ -184,7 +184,11 @@ Evidence packet memuat snapshot FNA, respons API PAKD, rincian withdrawal/cabang
 
 ## Pengujian dan batas operasional
 
-Jalankan `python -m pytest -q` kemudian jalankan `node` untuk setiap file `tests/frontend_*_selfcheck.cjs` (theme, guided, dashboard, network, forensic_workspace, arkham_engine, arkham_projection, arkham_workspace). Suite backend memakai SQLite provider nyata, HTTP ASGI dan HTTP/RPC mock agar dapat berjalan offline; smoke jaringan dijalankan terpisah.
+Jalankan `python -m pytest -q` kemudian `for check in tests/frontend_*.cjs; do node "$check"; done`. Suite backend memakai SQLite provider nyata, HTTP ASGI dan HTTP/RPC mock agar dapat berjalan offline; smoke jaringan dijalankan terpisah.
+
+Demo utama **Pola Berlian Ganda** menelusuri Rp300 juta dari korban BNI ke scammer BCA, empat bank mule, lalu satu UID Tokocrypto `TKO-9988112` melalui dua VA dan dua escrow P2P. Empat withdrawal berjumlah 18.750 USDT ERC-20 melewati empat wallet Hop 1 dan empat wallet Hop 2 dengan rute silang sebelum seluruhnya kembali ke akun PAKD yang sama. Saldo kembali dihitung satu kali; sistem menyusun satu rekomendasi Rp300 juta berstatus `NOT_SENT`, dengan nominal beku terkonfirmasi Rp0. Handoff komposit ditandai sebagai ringkasan perkara; empat intake asli tetap tersedia pada bukti sintetis.
+
+Autoplay dan tombol **Langkah berikutnya / sebelumnya** memakai urutan `chronological_step`, bukan jarak terhadap focal node: korban → scammer → mules → PAKD → Hop 1 → Hop 2 → PAKD yang sama. Sumber menyala terlebih dahulu, partikel bergerak mengikuti edge, lalu tujuan menyala. Pemutaran membuka seluruh scope graph agar filter tidak menyembunyikan awal kejadian; Stop, pergantian kasus dan render ulang membatalkan partikel aktif. Tahap akhir menyorot rekomendasi yang sudah ada tanpa mengirim atau menyetujui freeze. Untuk graph lama/live tanpa tahapan eksplisit, urutan diturunkan dari bukti waktu dan topologi tanpa mengarang node korban.
 
 Workspace memakai visualizer interaktif bergaya Arkham dengan node lingkaran, focal node ungu, inflow hijau, outflow merah, dan drawer detail. Dashboard **dan kanvas graph** mendukung light/dark mode melalui toolbar graph atau tombol tema sidebar. Semua entitas yang dimuat tampil secara default: tidak ada batas delapan wallet atau peringkasan otomatis langkah PAKD. Fit to Screen mengikuti simulasi sampai stabil agar node tetap di dalam kanvas; drag/pan/zoom manual menghentikan penyesuaian otomatis sampai pengguna menekan Fit lagi.
 

@@ -41,7 +41,29 @@ class FNAHandoffAdapter:
                 raise ValueError("Waktu snapshot FNA wajib berzona dan berurutan")
             previous_time = timestamp
         last = records[-1]
-        if (accounts[last["source"]]["account"] != handoff.last_fna_account_number
+        if scenario.get("converging_intakes"):
+            intakes = scenario["converging_intakes"]
+            first, *splits = records
+            primary = accounts[first["target"]]
+            if (snapshot.get("handoff_scope") != "COMPOSITE_CASE_SUMMARY"
+                or accounts[first["source"]]["kind"] != "VICTIM"
+                or accounts[first["source"]]["account"] != handoff.victim_account_number
+                or primary["account"] != handoff.last_fna_account_number or primary["bank"] != handoff.last_fna_pujk_name
+                or D(first["amount_idr"]) != handoff.fiat_transfer_amount_idr
+                or len(splits) != len(intakes) or len({i["source_node_id"] for i in intakes}) != len(intakes)
+                or any(r["source"] != first["target"] for r in splits)
+                or sum((D(r["amount_idr"]) for r in splits), D(0)) != handoff.fiat_transfer_amount_idr
+                or {r["target"] for r in splits} != {i["source_node_id"] for i in intakes}):
+                raise ValueError("Ringkasan handoff FNA tidak sesuai konvergensi rekening mule")
+            for intake in intakes:
+                posting = next(r for r in splits if r["target"] == intake["source_node_id"])
+                if (D(posting["amount_idr"]) != D(intake["fiat_amount_idr"])
+                    or datetime.fromisoformat(posting["timestamp"]) > datetime.fromisoformat(intake["timestamp"])):
+                    raise ValueError("Intake PAKD tidak sesuai nominal/waktu sumber mule FNA")
+            if (handoff.pakd_gateway_va_or_account != scenario["onramp"]["uid"]
+                or handoff.fiat_transfer_timestamp != max(datetime.fromisoformat(i["timestamp"]) for i in intakes)):
+                raise ValueError("Ringkasan handoff komposit tidak sesuai akun PAKD/waktu intake terakhir")
+        elif (accounts[last["source"]]["account"] != handoff.last_fna_account_number
             or accounts[last["source"]]["bank"] != handoff.last_fna_pujk_name
             or accounts[last["target"]]["account"] != handoff.pakd_gateway_va_or_account
             or D(last["amount_idr"]) != handoff.fiat_transfer_amount_idr
@@ -76,7 +98,7 @@ class FNAHandoffAdapter:
                 node_zone="CRYPTO_EXCHANGE_BRIDGE" if kind == "PAKD_VA" else "FIAT_BANK", node_type=kind,
                 entity_label=account.get("platform", account["bank"]), account=account["account"],
                 amount_idr=sum(incoming, D(0)) if incoming else handoff.fiat_transfer_amount_idr,
-                institution_decision=prior, hop=index, metadata=metadata))
+                institution_decision=prior, hop=index, chronological_step=account.get("chronological_step", index), metadata=metadata))
         return nodes, edges
 
     def manual_snapshot(self, handoff):

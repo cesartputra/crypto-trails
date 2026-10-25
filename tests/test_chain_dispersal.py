@@ -20,8 +20,8 @@ def payload():
 
 
 def test_default_catalog_has_three_allocations_and_preserves_other_presets():
-    assert next(iter(SCENARIOS)) == "multichain-dispersal"
-    assert len(SCENARIOS) == 7
+    assert next(iter(SCENARIOS)) == "double-diamond-loopback"
+    assert len(SCENARIOS) == 8
     for scenario in SCENARIOS.values():
         assert scenario["chain_dispersals"]
     result = payload()

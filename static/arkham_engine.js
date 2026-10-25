@@ -25,14 +25,31 @@ const ArkhamEngine = (() => {
     }
     const upstream = distances(incoming), downstream = distances(outgoing);
     const sideOf = id => id === focalId ? 'hub' : (upstream.get(id) ?? Infinity) < (downstream.get(id) ?? Infinity) ? 'in' : (downstream.get(id) ?? Infinity) < (upstream.get(id) ?? Infinity) ? 'out' : 'other';
+    const stage = record => {
+      let zero = null;
+      for (const value of [record?.chronological_step, record?.metadata?.chronological_step]) {
+        if (value == null || typeof value === 'boolean' || String(value).trim() === '' || !Number.isInteger(Number(value))) continue;
+        if (Number(value) > 0) return Number(value);
+        if (Number(value) === 0) zero = 0;
+      }
+      return zero;
+    };
+    const stages = new Map(originals.map(node => [node.id, stage(node)]));
+    const edgeStages = new Set(edges.flatMap(edge => (edge.members || [edge]).map(stage)));
+    const chronological = originals.every(node => stages.get(node.id) != null && stages.get(node.id) >= 0 && stages.get(node.id) <= 5)
+      && [0, 1, 2, 3, 4, 5].every(value => [...stages.values()].includes(value))
+      && [1, 2, 3, 4, 5, 6].every(value => edgeStages.has(value))
+      && edges.some(edge => (edge.members || [edge]).some(record => stage(record) === 6 && stages.get(endpoint(record.source)) === 5 && stages.get(endpoint(record.target)) === 3));
+    const chronologicalGroups = Array.from({ length: 6 }, () => []);
+    if (chronological) for (const node of originals) chronologicalGroups[stages.get(node.id)].push(node.id);
     const groups = { in: [], out: [], other: [], hub: [] };
     for (const node of originals) groups[sideOf(node.id)].push(node.id);
     const nodes = originals.map(original => {
-      const side = sideOf(original.id), group = groups[side], index = group.indexOf(original.id);
+      const side = sideOf(original.id), group = chronological ? chronologicalGroups[stages.get(original.id)] : groups[side], index = group.indexOf(original.id);
       const rows = Math.max(1, Math.floor((height - 120) / 100)), row = index % rows, column = Math.floor(index / rows);
       const rowCount = Math.min(rows, group.length - column * rows), spread = rowCount > 1 ? row / (rowCount - 1) * 2 - 1 : 0;
-      const targetX = side === 'hub' ? width * .48 : side === 'in' ? width * .25 - column * 100 : side === 'out' ? width * (.75 + Math.abs(spread) * .08) + column * 100 : width * .48 + column * 100;
-      const targetY = side === 'hub' ? height * .5 : side === 'other' ? height * .5 + 150 + row * 100 : height * .5 + (row - (rowCount - 1) / 2) * 100;
+      const targetX = chronological ? width * .48 + (stages.get(original.id) - stages.get(focalId)) * 180 : side === 'hub' ? width * .48 : side === 'in' ? width * .25 - column * 100 : side === 'out' ? width * (.75 + Math.abs(spread) * .08) + column * 100 : width * .48 + column * 100;
+      const targetY = chronological ? height * .5 + (index - (group.length - 1) / 2) * 110 : side === 'hub' ? height * .5 : side === 'other' ? height * .5 + 150 + row * 100 : height * .5 + (row - (rowCount - 1) / 2) * 100;
       const saved = previous.get(original.id), pin = pins.get(original.id);
       const position = finitePoint(pin) ? pin : side === 'hub' ? { x: targetX, y: targetY } : finitePoint(saved) ? saved : { x: targetX, y: targetY };
       const node = { ...original, original, side, radius: side === 'hub' ? 38 : 30, targetX, targetY, x: position.x, y: position.y, vx: 0, vy: 0 };

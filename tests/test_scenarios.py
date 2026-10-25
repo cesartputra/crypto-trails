@@ -4,6 +4,7 @@ from decimal import Decimal
 import pytest
 
 SCENARIOS = [
+    ("double-diamond-loopback", "300000000"),
     ("multichain-dispersal", "180000000"),
     ("p2p-full-cycle", "180000000"),
     ("direct-va-loopback", "120000000"),
@@ -171,3 +172,90 @@ def test_scenario_evidence_is_deterministic_and_cases_are_independent(trace):
         assert before[key] == after[key]
     assert {item["request_id"] for item in before["governance_requests"]}.isdisjoint(
         item["request_id"] for item in after["governance_requests"])
+
+
+def test_double_diamond_is_primary_complete_and_conserves_every_layer(trace, scenarios):
+    assert next(iter(scenarios)) == "double-diamond-loopback"
+    graph = trace("double-diamond-loopback")
+    nodes = {node["id"]: node for node in graph["nodes"]}
+    stages = {step: [node for node in nodes.values() if node["chronological_step"] == step] for step in range(6)}
+    assert [len(stages[step]) for step in range(6)] == [1, 1, 4, 1, 4, 4]
+    assert stages[0][0]["account"] == "0192837465"
+    assert stages[1][0]["account"] == "8810293847"
+    assert {node["account"] for node in stages[2]} == {"13000998811", "034101002233", "4120088776", "7055443322"}
+    account = stages[3][0]
+    assert account["metadata"]["uid"] == "TKO-9988112"
+    assert account["metadata"]["kyc"]["nik_masked"] == "3171********0009"
+    assert account["node_type"] == "PAKD_USER_ACCOUNT"
+    assert "DIRECT VA" in graph["route_badges"] and "P2P ON-RAMP DETECTED" in graph["route_badges"]
+    edges = graph["edges"]
+    assert [edge["chronological_step"] for edge in edges] == sorted(edge["chronological_step"] for edge in edges)
+    assert {edge["chronological_step"] for edge in edges} == set(range(1, 7))
+    assert {(edge["source"], edge["target"]) for edge in edges if edge["chronological_step"] == 1} == {(stages[0][0]["id"], stages[1][0]["id"])}
+    assert {amount(edge["amount_idr"]) for edge in edges if edge["chronological_step"] == 2} == {amount(80000000), amount(75000000), amount(70000000)}
+    intakes = [edge for edge in edges if edge["chronological_step"] == 3]
+    assert len(intakes) == 4 and {edge["target"] for edge in intakes} == {account["id"]}
+    assert sum(amount(edge["amount_idr"]) for edge in intakes) == 300000000
+    assert sum(amount(edge["amount_idr"]) for edge in intakes if edge["metadata"]["intake_mechanism"] == "DIRECT_VA_DEPOSIT") == 155000000
+    assert sum(amount(edge["amount_idr"]) for edge in intakes if edge["metadata"]["intake_mechanism"] == "P2P_ON_RAMP_ESCROW") == 145000000
+    assert {edge["metadata"]["intake_mechanism"] for edge in intakes} == {"DIRECT_VA_DEPOSIT", "P2P_ON_RAMP_ESCROW"}
+    assert len(graph["p2p_detections"]) == 2
+    withdrawals = [edge for edge in edges if edge["chronological_step"] == 4]
+    assert sorted(amount(edge["crypto_amount"]) for edge in withdrawals) == [4500, 4500, 4750, 5000]
+    assert {edge["source"] for edge in withdrawals} == {account["id"]}
+    assert all(edge["asset"] == "USDT" and edge["chain"] == "ETHEREUM_ERC20" for edge in edges if edge["chronological_step"] >= 4)
+    layering = [edge for edge in edges if edge["chronological_step"] == 5]
+    assert len(layering) > 4
+    assert all(sum(edge["source"] == node["id"] for edge in layering) >= 2 for node in stages[4])
+    returns = [edge for edge in edges if edge["chronological_step"] == 6]
+    assert len(returns) == 4 and {edge["target"] for edge in returns} == {account["id"]}
+    for step in (4, 5, 6):
+        assert sum(amount(edge["crypto_amount"]) for edge in edges if edge["chronological_step"] == step) == 18750
+    for node in [*stages[4], *stages[5]]:
+        assert sum(amount(edge["crypto_amount"]) for edge in edges if edge["target"] == node["id"]) == sum(amount(edge["crypto_amount"]) for edge in edges if edge["source"] == node["id"])
+        assert amount(node["balance_crypto"]) == 0
+    assert amount(account["balance_crypto"]) == 18750
+    assert account["metadata"]["full_circle_loopback_pct"] == "100"
+    assert sum(amount(node["balance_crypto"]) for node in nodes.values()) == 18750
+    assert len(graph["governance_requests"]) == 1
+    request = graph["governance_requests"][0]
+    assert request["institution_category"] == "PAKD" and request["institution_name"] == "Tokocrypto"
+    assert request["target_node_id"] == account["id"]
+    assert request["request_status"] == "NOT_SENT" and amount(request["requested_amount_idr"]) == 300000000
+    assert amount(graph["recoverable_amount_idr"]) == 300000000
+    assert sum(amount(record["remaining_pakd_balance_idr"]) for record in graph["pakd_trails"]) == 300000000
+    assert amount(graph["total_traced_usdt"]) == 18750 and amount(graph["confirmed_frozen_amount_idr"]) == 0
+    assert all(item["metadata"]["chronological_step"] == item["chronological_step"] for item in [*nodes.values(), *edges])
+
+
+@pytest.mark.parametrize("scenario_id,_", SCENARIOS)
+def test_all_presets_supply_upstream_first_numeric_chronology(trace, scenario_id, _):
+    graph = trace(scenario_id)
+    assert all(type(item["chronological_step"]) is int for item in graph["nodes"] + graph["edges"])
+    first = min(graph["edges"], key=lambda edge: edge["chronological_step"])
+    victim = next(node for node in graph["nodes"] if node["node_type"] == "VICTIM")
+    assert first["chronological_step"] == 1 and first["source"] == victim["id"]
+    assert victim["chronological_step"] == 0
+
+
+@pytest.mark.parametrize("field,value", [("wallet_role", "REGISTERED_WITHDRAWAL_WHITELIST"),
+                                        ("user_uid", "TKO-ANOTHER"),
+                                        ("kyc_nik_masked", "3171********9999")])
+def test_double_diamond_only_accepts_same_custodial_uid_for_loopback(trace, field, value):
+    import asyncio
+    import httpx
+    from scenarios import get_scenario
+    from schemas import TrailNode, TrailEdge
+    from services.p2p_and_pakd_bridge import P2PAndPAKDBridge
+    from services.pakd_api_consumer import PAKDAPIConsumer
+    from services.pakd_scoped_mirror_provider import ScopedMirrorProvider
+
+    graph = trace("double-diamond-loopback")
+    account = next(node for node in graph["nodes"] if node["id"] == "scammer-uid")
+    wallet = ScopedMirrorProvider().lookup_wallet("TOKOCRYPTO", account["address"], "ETHEREUM")
+    wallet[field] = value
+    consumer = PAKDAPIConsumer(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"wallet": wallet})))
+    nodes = [TrailNode.model_validate(node) for node in graph["nodes"]]
+    edges = [TrailEdge.model_validate(edge) for edge in graph["edges"]]
+    with pytest.raises(ValueError, match="Loopback"):
+        asyncio.run(P2PAndPAKDBridge(consumer).resolve_offramp(get_scenario("double-diamond-loopback"), nodes, edges))

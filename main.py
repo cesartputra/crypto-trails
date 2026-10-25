@@ -227,9 +227,19 @@ async def trace_report(handoff: FNAMoneyTrailHandoffInput):
     if scenario.get("expansion_note"):
         warnings.append("Atribusi berhenti pada DEX; output swap tidak diasumsikan milik pelaku tanpa bukti tambahan.")
     badges = ["FNA HANDOFF", "PAKD MIRROR API", "DIRECT VA" if scenario["onramp"]["kind"] == "VA" else "P2P ON-RAMP DETECTED"]
+    if scenario.get("same_uid_loopback"):
+        badges.extend(["DIRECT VA", "100% FULL-CIRCLE LOOPBACK", "1 TIKET PAKD · NOT SENT"])
     if scenario.get("dispersal_offramp") or any(p.p2p_direction == "OFF_RAMP_WITHDRAWAL" for p in p2p):
         badges.append("P2P OFF-RAMP CASH-OUT DETECTED")
-    edges.sort(key=lambda edge: edge.timestamp or handoff.fiat_transfer_timestamp)
+    node_steps = {}
+    for node in nodes:
+        node.chronological_step = node.metadata.get("chronological_step", node.hop)
+        node.metadata["chronological_step"] = node.chronological_step
+        node_steps[node.id] = node.chronological_step
+    for edge in edges:
+        edge.chronological_step = edge.metadata.get("chronological_step", max(node_steps[edge.source] + 1, node_steps[edge.target]))
+        edge.metadata["chronological_step"] = edge.chronological_step
+    edges.sort(key=lambda edge: (edge.chronological_step, edge.timestamp or handoff.fiat_transfer_timestamp))
     graph = CrossRailGraphResponse(trace_id=trace_id, iasc_ticket_id=handoff.iasc_ticket_id, fna_trail_id=handoff.fna_trail_id,
         scenario_id=handoff.scenario_id, fna_handoff=handoff, nodes=nodes, edges=edges, pakd_trails=pakd,
         p2p_detections=p2p, total_scam_idr=handoff.fiat_transfer_amount_idr, total_traced_idr=handoff.fiat_transfer_amount_idr,

@@ -56,11 +56,16 @@ class ScenarioTrailer:
         wallets = {w["id"]: w for w in scenario["wallets"]}
         initial = ramp["initial_wallet"]
         withdrawal_time = datetime.fromisoformat(ramp["withdrawal_timestamp"])
-        incoming = {initial: D(ramp["crypto_amount"])}
+        withdrawals = scenario["chain_dispersals"] if scenario.get("same_uid_loopback") else []
+        incoming = {b["initial_node_id"]: D(b["crypto_amount"]) for b in withdrawals} if withdrawals else {initial: D(ramp["crypto_amount"])}
+        if withdrawals and (len(incoming) != len(withdrawals) or any(not value.is_finite() or value <= 0 for value in incoming.values())
+            or sum(incoming.values(), D(0)) != D(ramp["crypto_amount"])):
+            raise ValueError("Alokasi withdrawal konvergensi tidak unik atau tidak seimbang")
+        initial_ids = set(incoming)
         tainted_received = dict(incoming)
-        funds = {initial: incoming[initial] + D(wallets[initial].get("clean_balance_crypto", 0))}
-        taint_stock = {initial: incoming[initial]}
-        hops = {initial: 0}
+        funds = {key: value + D(wallets[key].get("clean_balance_crypto", 0)) for key, value in incoming.items()}
+        taint_stock = dict(incoming)
+        hops = {key: 0 for key in incoming}
         source_hop = next(n.hop for n in nodes if n.id == "scammer-uid")
         ledger = sorted(scenario["chain_ledger"], key=lambda x: datetime.fromisoformat(x["timestamp"]))
         if len({tx["id"] for tx in ledger}) != len(ledger):
@@ -93,7 +98,8 @@ class ScenarioTrailer:
                 asset=tx["asset"], amount_idr=fiat_value(tainted), tx_hash=tx["tx_hash"], timestamp=tx["timestamp"],
                 metadata={"chain": tx["chain"], "tainted_crypto_amount": str(tainted),
                           "evidence_source": "SIMULATED_SCENARIO_LEDGER", "simulation": True,
-                          "bridge_evidence_status": tx.get("bridge_evidence_status"), "taint_model": "proportional_chronological_stock"}))
+                          "bridge_evidence_status": tx.get("bridge_evidence_status"), "taint_model": "proportional_chronological_stock",
+                          **({"chronological_step": tx["chronological_step"], "same_uid_loopback": tx.get("same_uid_loopback", False)} if "chronological_step" in tx else {})}))
         for wallet_id, spent in scenario.get("offramp_crypto_spent", {}).items():
             spent = D(spent)
             if spent < 0 or spent > funds.get(wallet_id, D(0)):
@@ -114,12 +120,19 @@ class ScenarioTrailer:
             pct = min(fraction * 100, D(100))
             metadata = {**w, "evidence_source": "SIMULATED_SCENARIO", "architecture_zone": "Zona 3: On-Chain Trails · skenario sintetis", "scenario_entity_profile": w["label"],
                         "taint_model": "proportional_chronological_stock", "onchain_hop": hops[wallet_id],
-                        "is_initial_wallet": wallet_id == initial, "tainted_balance_crypto": str(balance * fraction),
+                        "is_initial_wallet": wallet_id in initial_ids, "tainted_balance_crypto": str(balance * fraction),
                         "calculated_remaining_crypto": str(funds[wallet_id]), "cumulative_received_crypto": str(amount),
                         "attribution_status": "STOPPED_AT_TRANSFORMATION" if w.get("boundary") else "FIXTURE_ATTRIBUTED",
                         "tx_hashes": [tx["tx_hash"] for tx in ledger if tx["target"] == wallet_id or tx["source"] == wallet_id]}
             if branch:
                 metadata["attributed_recoverable_amount_idr"] = str(fiat_value(balance * fraction))
+            if scenario.get("same_uid_loopback") and wallet_id == "scammer-uid":
+                account = next(n for n in nodes if n.id == wallet_id)
+                account.balance_crypto = balance
+                account.taint_score_pct = pct.quantize(D("0.01"))
+                account.address = w["address"]
+                account.metadata.update({**metadata, "chronological_step": 3})
+                continue
             nodes.append(TrailNode(id=wallet_id, label=w["label"], node_zone="ONCHAIN_WALLET", node_type=w["kind"],
                 entity_label=w["label"] if w["kind"] != "UNHOSTED_WALLET" else "Unhosted Wallet",
                 address=w["address"], chain=w.get("chain", ramp["chain"]), asset=ramp["asset"],
@@ -127,12 +140,20 @@ class ScenarioTrailer:
                 bridged_from_chain=w.get("bridged_from_chain"), bridged_to_chain=w.get("bridged_to_chain"), crypto_amount=amount,
                 amount_idr=fiat_value(tainted_received[wallet_id]), balance_crypto=balance,
                 taint_score_pct=pct.quantize(D("0.01")), hop=source_hop + 1 + hops[wallet_id], metadata=metadata))
-        tx_hash = ramp["withdrawal_tx_hash"]
-        next(n for n in nodes if n.id == initial).metadata["tx_hashes"].insert(0, tx_hash)
-        edges.append(TrailEdge(id=f"initial-withdrawal-{branch['withdrawal_id']}" if branch else "initial-withdrawal", source="scammer-uid", target=initial, edge_type="EXCHANGE_WITHDRAWAL",
-            label=f"Withdraw {ramp['crypto_amount']} {ramp['asset']}", crypto_amount=D(ramp["crypto_amount"]), asset=ramp["asset"],
-            amount_idr=fiat_value(D(ramp["crypto_amount"])), tx_hash=tx_hash, timestamp=withdrawal_time,
-            metadata={"chain": ramp["chain"], "evidence_source": "SYNTHETIC_EXCHANGE_WITHDRAWAL", "uid": ramp["uid"]}))
+        if not withdrawals:
+            withdrawals = [{"withdrawal_id": branch["withdrawal_id"] if branch else None,
+                "initial_node_id": initial, "crypto_amount": ramp["crypto_amount"],
+                "withdrawal_tx_hash": ramp["withdrawal_tx_hash"], "withdrawal_timestamp": ramp["withdrawal_timestamp"]}]
+        for withdrawal in withdrawals:
+            target, tx_hash = withdrawal["initial_node_id"], withdrawal["withdrawal_tx_hash"]
+            next(n for n in nodes if n.id == target).metadata["tx_hashes"].insert(0, tx_hash)
+            edges.append(TrailEdge(id=f"initial-withdrawal-{withdrawal['withdrawal_id']}" if withdrawal["withdrawal_id"] else "initial-withdrawal",
+                source="scammer-uid", target=target, edge_type="EXCHANGE_WITHDRAWAL",
+                label=f"Withdraw {withdrawal['crypto_amount']} {ramp['asset']}", crypto_amount=D(withdrawal["crypto_amount"]), asset=ramp["asset"],
+                chain=ramp["chain"], amount_idr=fiat_value(D(withdrawal["crypto_amount"])), tx_hash=tx_hash,
+                timestamp=withdrawal["withdrawal_timestamp"],
+                metadata={"chain": ramp["chain"], "evidence_source": "SYNTHETIC_EXCHANGE_WITHDRAWAL", "uid": ramp["uid"],
+                    **({"chronological_step": 4} if scenario.get("same_uid_loopback") else {})}))
 
     def expand_fixture(self, scenario, address, chain, existing_ids):
         wallets = {w["id"]: w for w in scenario["wallets"]}

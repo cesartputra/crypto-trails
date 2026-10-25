@@ -640,6 +640,7 @@ function showGraphTooltip(event, title, detail) {
 
 function renderGraph() {
   if (!state.graph) return;
+  stopAnimation();
   state.graphEngine?.stop(); state.graphEngine = null;
   layoutNodes();
   if ($("#graph-empty")) $("#graph-empty").hidden = state.viewNodes.length > 0;
@@ -694,6 +695,7 @@ function compactIdr(value) {
 }
 
 function highlightGraphSelection() {
+  if (state.activeAnimationStep) return;
   const selected=state.viewNodes.find(node=>node.id===state.selected || node.cluster_members?.some(member=>member.id===state.selected))?.id;
   const connected=new Set(selected?[selected]:[]); let matching=false;
   for(const group of document.querySelectorAll(".edge-group")){
@@ -717,7 +719,8 @@ function fitGraph(){
   const board=$("#graph-scroll"),points=[...state.positions.values()];if(!points.length)return;
   const left=Math.min(...points.map(point=>point.x-point.radius-15)),right=Math.max(...points.map(point=>point.x+point.radius+15)),top=Math.min(...points.map(point=>point.y-point.radius-15)),bottom=Math.max(...points.map(point=>point.y+point.radius+15));
   const drawer=$("#inspector-drawer"),boardRect=board.getBoundingClientRect(),covered=drawer.hidden?0:Math.max(0,boardRect.right-drawer.getBoundingClientRect().left);
-  const topPadding=Math.max(145,($(".visualizer-overlay")?.clientHeight || 0)+34),bottomPadding=Math.max(95,($(".activity-timeline")?.clientHeight || 0)+30);
+  const banner=$("#animation-step"),bannerBottom=banner.hidden?0:banner.getBoundingClientRect().bottom-boardRect.top+12;
+  const topPadding=Math.max(145,($(".visualizer-overlay")?.clientHeight || 0)+34,bannerBottom),bottomPadding=Math.max(95,($(".activity-timeline")?.clientHeight || 0)+30);
   const availableWidth=Math.max(180,board.clientWidth-100-covered),availableHeight=Math.max(80,board.clientHeight-topPadding-bottomPadding);
   const focal=state.positions.get(state.focalId)||{x:(left+right)/2,y:(top+bottom)/2};
   const halfWidth=Math.max(focal.x-left,right-focal.x,1),halfHeight=Math.max(focal.y-top,bottom-focal.y,1);
@@ -740,7 +743,8 @@ function setFocalNode(id){
   state.pins.delete(id);state.focalId=id;state.selected=id;state.selectedEdge=null;state.chainFilter="ALL";stopAnimation();renderCaseSummary();renderGraph();fitGraph();selectNode(id);
 }
 
-function selectNode(id, open = true) {
+function selectNode(id, open = true, fromAnimation = false) {
+  if (!fromAnimation) stopAnimation();
   if (open) openInspector();
   state.selectedEdge = null;
   for (const group of document.querySelectorAll(".edge-group")) { group.classList.remove("selected"); group.setAttribute("aria-pressed", "false"); }
@@ -760,6 +764,7 @@ function selectNode(id, open = true) {
 }
 
 function selectEdge(id) {
+  stopAnimation();
   openInspector();
   state.selectedEdge = id;
   state.selected = null;
@@ -1269,41 +1274,134 @@ async function expandNode(node, button) {
   } catch (error) { toast(error.message, true); } finally { button.disabled = false; button.textContent = "+ Expand hop on-chain berikutnya"; }
 }
 
-function stopAnimation() {
+function animationPlan() {
+  return ForensicGraph.animationSteps(state.graph || {nodes: [], edges: []});
+}
+
+function renderFlowStepControls() {
+  const steps = animationPlan(), index = state.flowCursor ?? -1;
+  $("#flow-prev-step").disabled = index <= 0;
+  $("#flow-next-step").disabled = !steps.length || index >= steps.length - 1;
+  $("#flow-step-label").textContent = index < 0 ? `${steps.length} tahap` : `${index + 1} / ${steps.length}`;
+}
+
+function stopAnimation(reset = true) {
   state.animation++;
-  for (const group of document.querySelectorAll(".node,.edge-group")) group.classList.remove("dimmed", "active");
+  state.cancelFlowParticles?.(); state.cancelFlowParticles = null;
+  state.activeAnimationStep = null;
+  for (const particle of document.querySelectorAll(".flow-particle")) particle.remove();
+  for (const group of document.querySelectorAll(".node,.edge-group")) group.classList.remove("dimmed", "active", "flow-source", "flow-arrived");
+  if (reset) state.flowCursor = -1;
   $("#animation-step").hidden = true;
   $("#animate-button").replaceChildren(el("span", "", "▷"), document.createTextNode("Animasi aliran dana"));
   $("#animate-button").dataset.running = "false";
   $("#sidebar-animate-button").textContent = "▶ Putar Animasi Aliran Dana";
+  renderFlowStepControls();
+}
+
+function prepareFlowAnimation() {
+  // Playback shows the whole evidence route so filters cannot hide the victim origin.
+  const filtered = state.chainFilter !== "ALL" || state.timeRange !== "ALL" || state.timelineRange || state.flowMode !== "ALL" || state.groupMode !== "CHAIN" || state.focusMainPath;
+  if (filtered) {
+    state.chainFilter = state.timeRange = state.flowMode = "ALL"; state.timelineRange = null; state.groupMode = "CHAIN"; state.focusMainPath = false;
+    $("#focus-main-path").checked = false; $("#owner-chain-toggle").checked = false;
+    $("#value-filter-pill").setAttribute("aria-pressed", "false"); $("#flow-filter-pill").textContent = "FLOW ALL"; $("#group-mode-label").textContent = "GROUP BY CHAIN";
+    for (const button of document.querySelectorAll("#time-range button")) { const all = button.dataset.days === "ALL"; button.classList.toggle("active", all); button.setAttribute("aria-pressed", String(all)); }
+    renderCaseSummary(); renderGraph(); fitGraph();
+  }
+  if (state.investigationView === "audit") setInvestigationView("flow");
+  return animationPlan();
+}
+
+function paintAnimationStep(step, arrived) {
+  const steps = animationPlan(), visited = new Set(steps.slice(0, state.flowCursor).flatMap(item => [...item.sourceIds, ...item.targetIds]));
+  step.sourceIds.forEach(id => visited.add(id));
+  if (arrived) step.targetIds.forEach(id => visited.add(id));
+  for (const group of document.querySelectorAll(".node")) {
+    const id = group.dataset.nodeId;
+    if (!arrived) group.classList.remove("selected");
+    group.classList.toggle("dimmed", !visited.has(id));
+    group.classList.toggle("flow-source", step.sourceIds.includes(id));
+    group.classList.toggle("flow-arrived", arrived && step.targetIds.includes(id));
+  }
+}
+
+function moveFlowParticles(groups, token) {
+  const particles = groups.map(group => { const particle = svgEl("circle", {class: "flow-particle", r: 4, "aria-hidden": "true"}); group.append(particle); return {particle, path: group.querySelector(".fan-strand")}; });
+  const duration = window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 100 : 1050;
+  return new Promise(resolve => {
+    let start, frame;
+    const finish = success => { cancelAnimationFrame(frame); particles.forEach(({particle}) => particle.remove()); if (state.cancelFlowParticles === cancel) state.cancelFlowParticles = null; resolve(success); };
+    const cancel = () => finish(false);
+    state.cancelFlowParticles = cancel;
+    function tick(time) {
+      if (token !== state.animation) { finish(false); return; }
+      start ??= time;
+      const progress = Math.min(1, (time - start) / duration);
+      for (const {particle, path} of particles) { const point = path.getPointAtLength(path.getTotalLength() * progress); particle.setAttribute("transform", `translate(${point.x} ${point.y})`); }
+      if (progress >= 1) finish(true); else frame = requestAnimationFrame(tick);
+    }
+    frame = requestAnimationFrame(tick);
+  });
+}
+
+async function playFlowStep(index, token) {
+  const steps = animationPlan(), step = steps[index];
+  if (!step || token !== state.animation) return false;
+  state.flowCursor = index; state.activeAnimationStep = step;
+  const ids = new Set(step.edges.map(edge => edge.id)), groups = [];
+  for (const group of document.querySelectorAll(".edge-group")) {
+    const bundle = state.viewEdges.find(edge => edge.id === group.dataset.edgeId);
+    const active = Boolean(bundle && graphMemberEdges(bundle).some(edge => ids.has(edge.id)));
+    group.classList.toggle("dimmed", !active); group.classList.remove("active");
+    if (active) { group.classList.add("active"); groups.push(group); }
+  }
+  paintAnimationStep(step, false);
+  $("#animation-step").hidden = false;
+  $("#animation-step").textContent = `${index + 1} / ${steps.length} · ${step.label} · ${step.edges.length} relasi`;
+  if (state.autoFit) fitGraph();
+  renderFlowStepControls();
+  if (!await moveFlowParticles(groups, token)) return false;
+  paintAnimationStep(step, true);
+  const target = step.targetIds.find(id => (state.graph.governance_requests || []).some(request => request.target_node_id === id)) || step.targetIds[0];
+  if (target) selectNode(target, index === steps.length - 1, true);
+  if (index === steps.length - 1) {
+    const requests = (state.graph.governance_requests || []).filter(request => step.targetIds.includes(request.target_node_id));
+    $("#animation-step").textContent += requests.length ? ` · Rekomendasi freeze: ${requests.map(request => `${idr(request.requested_amount_idr)} · ${friendly(request.request_status)}`).join("; ")}` : " · Tinjau bukti dan rekomendasi yang tersedia";
+    if (state.autoFit) fitGraph();
+  }
+  return true;
+}
+
+async function stepFlow(delta = 1) {
+  if (!state.graph) return;
+  const index = (state.flowCursor ?? -1) + delta;
+  stopAnimation(false);
+  const steps = prepareFlowAnimation();
+  if (index < 0 || index >= steps.length) return;
+  await playFlowStep(index, ++state.animation);
 }
 
 async function animate() {
   if (!state.graph) return;
   if ($("#animate-button").dataset.running === "true") { stopAnimation(); return; }
+  stopAnimation();
+  const steps = prepareFlowAnimation();
+  if (!steps.length) { toast("Belum ada transfer untuk dianimasikan."); return; }
   const token = ++state.animation;
-  if (state.investigationView === "audit") setInvestigationView("flow");
-  const hops = state.flowProjection.hops;
-  const edges = [...state.viewEdges].sort((a, b) => (hops.get(a.source) || 0) - (hops.get(b.source) || 0) || (new Date(a.timestamp || 0).getTime() - new Date(b.timestamp || 0).getTime()));
-  if (!edges.length) { toast("Belum ada transfer untuk dianimasikan."); return; }
   $("#animate-button").dataset.running = "true";
   $("#sidebar-animate-button").textContent = "Ⅱ Hentikan Animasi";
   $("#animate-button").replaceChildren(el("span", "", "Ⅱ"), document.createTextNode("Hentikan animasi"));
-  for (const group of document.querySelectorAll(".node,.edge-group")) group.classList.add("dimmed");
-  $("#animation-step").hidden = false;
-  log("Animasi penelusuran dimulai.");
-  for (let index = 0; index < edges.length; index++) {
-    if (token !== state.animation) return;
-    const edge = edges[index];
-    for (const group of document.querySelectorAll(".edge-group")) if (group.dataset.edgeId === edge.id) { group.classList.remove("dimmed"); group.classList.add("active"); }
-    for (const group of document.querySelectorAll(".node")) if ([edge.source, edge.target].includes(group.dataset.nodeId)) group.classList.remove("dimmed");
-    $("#animation-step").textContent = `${String(index + 1).padStart(2, "0")} / ${edges.length} · ${ForensicGraph.amountSummary(edge)}`;
-    selectNode(edge.target);
-    const position = state.positions.get(edge.target);
-    if (position) { state.x = $("#graph-scroll").clientWidth/2-position.x*state.scale; state.y = $("#graph-scroll").clientHeight/2-position.y*state.scale; updateTransform(); }
-    await new Promise((resolve) => setTimeout(resolve, window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 100 : 1050));
+  log("Animasi kronologis dimulai dari aliran paling hulu.");
+  for (let index = 0; index < steps.length; index++) {
+    if (!await playFlowStep(index, token)) return;
   }
-  if (token === state.animation) { stopAnimation(); log("Animasi selesai. Semua relasi tersedia untuk diinspeksi."); }
+  if (token === state.animation) {
+    $("#animate-button").dataset.running = "false";
+    $("#animate-button").replaceChildren(el("span", "", "▷"), document.createTextNode("Ulangi animasi"));
+    $("#sidebar-animate-button").textContent = "▶ Ulangi Animasi Aliran Dana";
+    log("Animasi selesai. Rekomendasi tetap menunggu keputusan institusi.");
+  }
 }
 
 function renderTimeline(){
@@ -1468,6 +1566,8 @@ $("#focus-main-path").addEventListener("change", (event) => {
 });
 $("#animate-button").addEventListener("click", animate);
 $("#sidebar-animate-button").addEventListener("click", animate);
+$("#flow-prev-step").addEventListener("click", () => stepFlow(-1));
+$("#flow-next-step").addEventListener("click", () => stepFlow(1));
 $("#run-scenario-button").addEventListener("click", trace);
 for (const item of document.querySelectorAll(".investigation-stepper li")) {
   item.tabIndex = 0; item.setAttribute("role", "button");
