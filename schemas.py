@@ -52,7 +52,7 @@ class InstitutionFreezeDecision(BaseModel):
     model_config = ConfigDict(allow_inf_nan=False)
     request_id: str
     target_node_id: str
-    institution_category: Literal["PUJK", "PAKD", "STABLECOIN_ISSUER_OR_GLOBAL_EXCHANGE"]
+    institution_category: Literal["PUJK", "PAKD"]
     institution_name: str
     request_status: DecisionStatus = "NOT_SENT"
     requested_amount_idr: Money = Field(ge=0)

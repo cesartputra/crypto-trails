@@ -173,8 +173,10 @@ def test_zero_balance_fna_pujk_can_reject_but_cannot_approve_funds(client, trace
 
 def test_golden_escrow_hold_is_institution_owned_and_limited_to_order(client, trace):
     graph = trace("golden-period")
-    request = next(item for item in graph["governance_requests"] if item["metadata"].get("request_scope") == "TARGETED_ESCROW")
+    request = next(item for item in graph["governance_requests"] if item["metadata"].get("request_scope") == "TARGETED_PAKD_ACCOUNT_HOLD")
     assert request["institution_category"] == "PAKD"
+    assert request["target_node_id"] == "scammer-uid"
+    assert request["metadata"]["target_uid"] == "TKR-00404"
     assert Decimal(request["requested_amount_idr"]) == 60000000
     payload = pair(graph, request)
     response = client.post(SEND, json=payload)
@@ -203,36 +205,44 @@ def test_projected_total_failure_is_atomic_and_keeps_request_waiting(client, tra
     assert Decimal(replay.json()["confirmed_frozen_amount_idr"]) == 0
 
 
-def test_failed_issuer_packet_does_not_dispatch_or_mutate_request(client, trace):
+@pytest.mark.parametrize("stage", ["before_send", "cached_send", "decision"])
+@pytest.mark.parametrize("mutation", ["external_target", "category", "uid", "node_type"])
+def test_invalid_or_stale_account_request_is_rejected_atomically(client, trace, stage, mutation):
     import main
-
-    graph = trace("p2p-dex-cold-wallet")
-    request = next(item for item in graph["governance_requests"]
-                   if item["institution_category"] == "STABLECOIN_ISSUER_OR_GLOBAL_EXCHANGE")
-    state = main.TRACES[graph["trace_id"]]
-    target = next(node for node in state["graph"].nodes if node.id == request["target_node_id"])
-    target.asset = "ETH"
-    response = client.post(SEND, json=pair(graph, request))
-    assert response.status_code == 422, response.text
-    actual = next(item for item in state["graph"].governance_requests if item.request_id == request["request_id"])
-    assert actual.request_status == "NOT_SENT"
-    assert actual.approved_frozen_amount_idr == 0
-    assert actual.decision_timestamp is None
-    assert actual.request_id not in state["packets"]
-    assert state["graph"].confirmed_frozen_amount_idr == 0
-
-
-def test_address_wide_issuer_review_cannot_be_partial_nominal_freeze(client, trace):
-    graph = trace("p2p-dex-cold-wallet")
-    request = next(item for item in graph["governance_requests"]
-                   if item["institution_category"] == "STABLECOIN_ISSUER_OR_GLOBAL_EXCHANGE")
+    graph = trace("direct-va-loopback")
+    request = next(r for r in graph["governance_requests"] if Decimal(r["requested_amount_idr"]) > 0)
     payload = pair(graph, request)
-    sent = client.post(SEND, json=payload)
-    assert sent.status_code == 200, sent.text
-    response = client.post(DECIDE, json={**payload, "decision": PARTIAL,
-                                        "approved_frozen_amount_idr": "1000000"})
+    if stage != "before_send":
+        assert client.post(SEND, json=payload).status_code == 200
+    state = main.TRACES[graph["trace_id"]]
+    actual = next(r for r in state["graph"].governance_requests if r.request_id == request["request_id"])
+    target = next(n for n in state["graph"].nodes if n.id == actual.target_node_id)
+    if mutation == "external_target": actual.target_node_id = "w0"
+    elif mutation == "category": actual.institution_category = "PUJK"
+    elif mutation == "uid": target.metadata["uid"] = "OTHER-UID"
+    else: target.node_type = "UNHOSTED_WALLET"
+    before = state["graph"].model_dump(mode="json")
+    packets = dict(state["packets"])
+    response = client.post(DECIDE if stage == "decision" else SEND,
+                           json={**payload, **({"decision": APPROVED} if stage == "decision" else {})})
     assert response.status_code == 422, response.text
-    replay = client.post(SEND, json=payload).json()
-    assert replay["request"]["request_status"] == "SENT_WAITING_DECISION"
-    assert Decimal(replay["confirmed_frozen_amount_idr"]) == 0
-    assert replay["evidence_packet"]["issuer_request"]["scope"] == "ADDRESS_WIDE_TOKEN_RESTRICTION"
+    assert state["graph"].model_dump(mode="json") == before
+    assert state["packets"] == packets
+
+
+def test_cached_packet_cannot_be_replayed_after_switch_to_another_valid_account(client, trace):
+    import main
+    graph, request, payload, _ = sent_bank(client, trace)
+    state = main.TRACES[graph["trace_id"]]
+    actual = next(r for r in state["graph"].governance_requests if r.request_id == request["request_id"])
+    other = next(r for r in state["graph"].governance_requests if r.institution_category == "PAKD")
+    actual.target_node_id = other.target_node_id
+    actual.institution_category = other.institution_category
+    actual.institution_name = other.institution_name
+    actual.requested_amount_idr = other.requested_amount_idr
+    actual.metadata = dict(other.metadata)
+    state["graph"].governance_requests.remove(other)
+    before = state["graph"].model_dump(mode="json")
+    assert client.post(SEND, json=payload).status_code == 422
+    assert client.post(DECIDE, json={**payload, "decision": APPROVED}).status_code == 422
+    assert state["graph"].model_dump(mode="json") == before

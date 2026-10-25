@@ -102,8 +102,8 @@ def fixtures():
           account("merchant", "Merchant P2P · BCA", "BCA", "2998811223", "P2P_MERCHANT", merchant_id="MCH-6630",
                   incoming_24h=96, outgoing_24h=103, exact_amount_ratio="0.96", unique_counterparties=75)]
     initial3 = "0x88B0000000000000000000000000000000000001"
-    s3 = {"id": "p2p-dex-cold-wallet", "title": "FNA → PAKD P2P → DEX & Permohonan Issuer",
-          "description": "15.600 USDT ERC-20: 11.000 USDT tersisa pada cold wallet dan paket permohonan issuer.",
+    s3 = {"id": "p2p-dex-cold-wallet", "title": "FNA → PAKD P2P → DEX & Cold Wallet Eksternal",
+          "description": "15.600 USDT ERC-20: 11.000 USDT tersisa pada cold wallet eksternal sebagai bukti penelusuran.",
           "handoff": handoff_seed("p2p-dex-cold-wallet", "BRI", "250000000", a3[0]["account"], a3[1]["account"]),
           "accounts": a3, "bank_ledger": [bank_tx("b31", "victim", "mule1", "250000000", 0), bank_tx("b32", "mule1", "merchant", "250000000", 45)],
           "onramp": {"kind": "P2P", "bank_target": "merchant", "uid": "TKR-00931", "platform": "PAKD Demo P2P",
@@ -111,7 +111,7 @@ def fixtures():
                      "kyc": {"name": "Identitas Taker Demo 931", "document_ref": "KYC-SYNTH-931", "status": "SYNTHETIC_VERIFIED"}},
           "p2p_orders": [p2p_order("P2P-BUY-6630", "MCH-6630", a3[2]["account"], "250000000", "15600", "TKR-00931", initial3, 90)],
           "wallets": [wallet("w0", initial3, "Initial wallet · 0x88B…"),
-                      wallet("cold", "0x99A0000000000000000000000000000000000002", "Cold wallet · 0x99A…", balance="11000", recovery_institution="ISSUER"),
+                      wallet("cold", "0x99A0000000000000000000000000000000000002", "Cold wallet · 0x99A…", balance="11000", tracking_scope="EXTERNAL_WALLET_EVIDENCE"),
                       wallet("dex", "0xDEa0000000000000000000000000000000000003", "Uniswap V3 · Demo", "DEX_ROUTER",
                              boundary="Swap USDT→ETH memerlukan log swap dan valuasi tambahan; atribusi dihentikan di router."),
                       wallet("dex-next", "0xA110000000000000000000000000000000000004", "Pool Uniswap · investigasi", "DEX_POOL")],
@@ -126,8 +126,8 @@ def fixtures():
           account("merchant", "Merchant P2P · Mandiri", "Mandiri", "1310099887744", "P2P_MERCHANT", merchant_id="MCH-4404",
                   incoming_24h=145, outgoing_24h=152, exact_amount_ratio="0.98", unique_counterparties=111)]
     initial4 = "TGo1d3nP7rQ2sV8wY4zA6bC9dF1gH5jK3mN"
-    s4 = {"id": "golden-period", "title": "FNA Golden Period · Review PAKD & Issuer",
-          "description": "Rp60 juta masih di escrow dan Rp35 juta pada initial wallet; cakupan penyelamatan demo 100%.",
+    s4 = {"id": "golden-period", "title": "FNA Golden Period · Saldo Akun PAKD & Wallet Eksternal",
+          "description": "Rp60 juta tertahan untuk UID PAKD pada order P2P; Rp35 juta di wallet eksternal menjadi bukti penelusuran.",
           "handoff": handoff_seed("golden-period", "BNI", "95000000", a4[0]["account"], a4[1]["account"]),
           "accounts": a4, "bank_ledger": [bank_tx("b41", "victim", "mule1", "95000000", 0), bank_tx("b42", "mule1", "merchant", "95000000", 25)],
           "onramp": {"kind": "P2P", "bank_target": "merchant", "uid": "TKR-00404", "platform": "PAKD Demo P2P",
@@ -135,7 +135,7 @@ def fixtures():
                      "kyc": {"name": "Identitas Taker Demo 404", "document_ref": "KYC-SYNTH-404", "status": "SYNTHETIC_VERIFIED"}},
           "p2p_orders": [p2p_order("P2P-BUY-4404", "MCH-4404", a4[2]["account"], "95000000", "5937.5", "TKR-00404", initial4, 55,
                                    released_crypto_usdt="2187.5", held_crypto_usdt="3750")],
-          "wallets": [wallet("w0", initial4, "Initial wallet · golden period", balance="2187.5", recovery_institution="ISSUER")],
+          "wallets": [wallet("w0", initial4, "Initial wallet · golden period", balance="2187.5", tracking_scope="EXTERNAL_WALLET_EVIDENCE")],
           "chain_ledger": [], "reported_after_minutes": 6, "probability": "98"}
     for index, scenario in enumerate((s1, s2, s3, s4), 1):
         ramp = scenario["onramp"]
@@ -266,7 +266,7 @@ def multichain_dispersal_fixture():
         wallet("sol-hop",solhop,"Perantara SOL",chain="SOLANA",asset="SOL"),
         wallet("sol-deposit",soldeposit,"Deposit Pintu","DIRECT_EXCHANGE_DEPOSIT",balance="0",chain="SOLANA",asset="SOL",platform="Pintu",uid="PTU-DISP-SOL",recovery_institution="PAKD",kyc_nik_masked="3273********0011"),
         wallet("eth-initial",branches[2]["initial_wallet_address"],"USDT awal",chain="ETHEREUM",asset="USDT"),
-        wallet("eth-cold","0x99A0000000000000000000000000000000000010","Unhosted USDT",balance="3750",chain="ETHEREUM",asset="USDT",recovery_institution="ISSUER")]
+        wallet("eth-cold","0x99A0000000000000000000000000000000000010","Unhosted USDT",balance="3750",chain="ETHEREUM",asset="USDT",tracking_scope="EXTERNAL_WALLET_EVIDENCE")]
     ledger=[]
     for branch, route in [(branches[0],["btc-initial","btc-hop","btc-deposit"]),(branches[1],["sol-initial","sol-hop","sol-deposit"]),(branches[2],["eth-initial","eth-cold"])]:
         for index,(source,target) in enumerate(zip(route,route[1:])):

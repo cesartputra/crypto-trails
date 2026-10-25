@@ -14,7 +14,7 @@ function mount(){
       querySelector(selector){return selector==='.fan-strand'?{getTotalLength:()=>100,getPointAtLength:value=>({x:value,y:0})}:null;},querySelectorAll(){return this.children;}};
   }
   const stages=[['victim','primary'],['primary','mule'],['mule','pakd'],['pakd','hop1'],['hop1','hop2'],['hop2','pakd']].map(([source,target],index)=>({order:index+1,label:`Stage ${index+1}`,sourceIds:[source],targetIds:[target],edges:[{id:`tx${index+1}`,source,target,chronological_step:index+1,amount_idr:'300000000'}]}));
-  const graph={nodes:[...new Set(stages.flatMap(step=>[...step.sourceIds,...step.targetIds]))].map(id=>({id})),edges:stages.flatMap(step=>step.edges),governance_requests:[{target_node_id:'pakd',requested_amount_idr:'300000000',request_status:'NOT_SENT'}]};
+  const graph={nodes:[...new Set(stages.flatMap(step=>[...step.sourceIds,...step.targetIds]))].map(id=>id==='pakd'?{id,node_type:'PAKD_USER_ACCOUNT',node_zone:'CRYPTO_EXCHANGE_BRIDGE',entity_label:'Tokocrypto',metadata:{uid:'TKO-9988112'}}:{id}),edges:stages.flatMap(step=>step.edges),governance_requests:[{target_node_id:'pakd',institution_name:'Tokocrypto',institution_category:'PAKD',requested_amount_idr:'300000000',request_status:'NOT_SENT',metadata:{target_account_kind:'PAKD_UID_ACCOUNT',target_uid:'TKO-9988112'}}]};
   const nodes=graph.nodes.map(node=>{const group=element(node.id);group.dataset.nodeId=node.id;return group;});
   const edges=graph.edges.map(edge=>{const group=element(`edge-${edge.id}`);group.dataset={edgeId:edge.id,source:edge.source,target:edge.target};return group;});
   const controls=new Map();const $=selector=>{if(!controls.has(selector))controls.set(selector,element(selector));return controls.get(selector);};
@@ -25,6 +25,7 @@ function mount(){
     window:{matchMedia:()=>({matches:false})},requestAnimationFrame(fn){const id=++frameId;frames.set(id,fn);queueMicrotask(()=>{if(frames.delete(id)){clock+=350;fn(clock);}});return id;},cancelAnimationFrame:id=>frames.delete(id),setTimeout:fn=>{queueMicrotask(fn);return 1;},clearTimeout(){},
     selectNode(id){arrivals.push(id);},log(){},toast(){},renderGraph(){},fitGraph(){},renderCaseSummary(){},setInvestigationView(){},highlightGraphSelection(){},idr:value=>`Rp${value}`,friendly:value=>String(value).replaceAll('_',' ')};
   vm.createContext(context);
+  vm.runInContext(source.slice(source.indexOf('function freezeAccountTarget('),source.indexOf('function renderActions(')),context);
   const start=source.indexOf('function animationPlan(')>=0?source.indexOf('function animationPlan('):source.indexOf('function stopAnimation(');
   vm.runInContext(source.slice(start,source.indexOf('function renderTimeline(',start)),context);
   return {context,active,arrivals,particles,frames,controls,nodes,edges,graph};

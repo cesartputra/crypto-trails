@@ -438,7 +438,7 @@ function renderMetrics() {
   $("#metric-recovery").textContent = live ? "—" : `${number(pct, 1)}%`;
   $("#metric-recovery-note").textContent = live ? "Tidak dapat disimpulkan dari data publik" : `${idr(graph.recoverable_amount_idr)} · estimasi demo`;
   $("#metric-confirmed").textContent = live ? "—" : idr(graph.confirmed_frozen_amount_idr);
-  const decisions = graph.governance_requests || [];
+  const decisions = accountFreezeRequests(graph);
   const approved = decisions.filter((request) => Number(request.approved_frozen_amount_idr) > 0).length;
   const pending = decisions.filter((request) => request.request_status === "SENT_WAITING_DECISION").length;
   $("#metric-confirmed-note").textContent = live ? "Tidak ada freeze otomatis dari hasil live" : `${approved} keputusan positif · ${pending} menunggu · simulasi`;
@@ -527,8 +527,9 @@ function nodeTheme(node) {
 const zoneLabels = { FIAT_BANK: "Zona 1 · FNA’s Money Trails / PUJK", CRYPTO_EXCHANGE_BRIDGE: "Zona 2 · PAKD Scoped Mirror API", ONCHAIN_WALLET: "Zona 3 · Multichain & Bridge Trails" };
 
 function decisionForNode(node) {
-  const requests = (state.graph?.governance_requests || []).filter((request) => request.target_node_id === node.id);
-  return requests.find((request) => request.request_status !== "NOT_SENT") || node.institution_decision || node.metadata?.fna_institution_decision || requests[0] || null;
+  const requests = accountFreezeRequests(state.graph).filter((request) => request.target_node_id === node.id);
+  const historical = node.node_zone === "FIAT_BANK" ? node.metadata?.fna_institution_decision : null;
+  return requests.find((request) => request.request_status !== "NOT_SENT") || requests[0] || historical || null;
 }
 
 function decisionStyle(decision) {
@@ -683,7 +684,7 @@ function renderGraph() {
   state.autoFit = true; drawGraphPositions(); bindD3Interactions(); updateTransform(); highlightGraphSelection();
   $("#graph-node-count").textContent=String(state.viewNodes.length); $("#graph-edge-count").textContent=String(state.viewEdges.length);
   const focal=state.viewNodes.find(node=>node.id===state.focalId);
-  $("#focal-pill-label").textContent=short(focal?.address || focal?.account || focal?.label || state.graph.iasc_ticket_id,38);
+  $("#focal-pill-label").textContent=short(focal?.metadata?.uid || focal?.address || focal?.account || focal?.label || state.graph.iasc_ticket_id,38);
   $("#visualizer-status").textContent=`${d3 ? "D3 v7" : "Local physics · offline fallback"} · ${state.viewNodes.length}/${state.graph.nodes.length} entities · ${state.viewEdges.length} flows · ${state.flowProjection.unknownUsdCount} tx without USD valuation${state.physicsFrozen ? " · layout frozen" : ""}`;
   $("#flow-focus-note").textContent="Evidence remains complete in the audit and export. USD ≥ $0.10 applies only to recorded USD values; unknown values stay visible. Timeline bars count transactions.";
   renderTimeline(); renderTransactions(); renderAuditTrail();
@@ -754,7 +755,7 @@ function selectNode(id, open = true, fromAnimation = false) {
     group.classList.toggle("selected", selected);
     group.setAttribute("aria-pressed", String(selected));
   }
-  const nodeRequests = (state.graph?.governance_requests || []).filter((request) => request.target_node_id === id);
+  const nodeRequests = accountFreezeRequests(state.graph).filter((request) => request.target_node_id === id);
   if (!nodeRequests.some((request) => request.request_id === state.selectedRequestId)) state.selectedRequestId = nodeRequests[0]?.request_id || null;
   highlightGraphSelection();
   renderInspector();
@@ -894,7 +895,7 @@ function renderAuditTrail() {
     attribution.append(el("small", "", isLiveRecord(row.edge) ? "Label publik · pemilik belum diverifikasi" : "Skenario sintetis"));
     const inspect = el("button", "audit-action", "Inspeksi"); inspect.type = "button";
     inspect.addEventListener("click", () => { selectEdge(row.edge.id); $(".right-panel").scrollIntoView({block:"nearest",behavior:"smooth"}); }); actions.append(inspect);
-    const request = (state.graph.governance_requests || []).find(item => item.target_node_id === row.edge.target);
+    const request = accountFreezeRequests(state.graph).find(item => item.target_node_id === row.edge.target);
     if (request) { const freeze = el("button", "audit-action", "Tinjau rekomendasi freeze"); freeze.type = "button";
       freeze.addEventListener("click", () => { selectNode(row.edge.target); state.selectedRequestId = request.request_id; renderActions(); $("#action-list").scrollIntoView({block:"nearest",behavior:"smooth"}); }); actions.append(freeze); }
     tr.append(el("td", "", `${row.sourceRole === "source" ? "Origin" : row.hop} → ${row.targetHop}`),route,value,attribution,actions); contents.push(tr);
@@ -966,8 +967,9 @@ function renderInspector() {
   const status = el("span", `status-pill decision-${decisionTheme.className}`, decision ? `${decisionTheme.icon} ${decisionTheme.label}` : isLiveRecord(node) ? "● DATA PUBLIK MULTICHAIN" : "● Bukti sintetis · untuk peninjauan");
   const details = el("dl", "detail-list");
   addDetail(details, "Scanner", scannerLabel(node.scanner_provider || node.metadata?.scanner_provider));
-  addDetail(details, "Rekening / akun", node.account, "mono");
-  addDetail(details, "Alamat blockchain", node.address, "mono");
+  const pakdAccount = ["PAKD_USER_ACCOUNT", "PAKD_RECEIVER_ACCOUNT"].includes(node.node_type);
+  addDetail(details, pakdAccount ? "Akun internal PAKD · UID" : "Rekening / akun", pakdAccount ? node.metadata?.uid || node.account : node.account, "mono");
+  addDetail(details, pakdAccount ? "Alamat deposit terkait · bukti" : "Alamat blockchain", node.address, "mono");
   addDetail(details, "Jaringan", `${node.chain || "—"}${node.chain_id ? ` [${node.chain_id}]` : ""}`);
   addDetail(details, "Bridge protocol", node.bridge_protocol_name);
   if (node.is_bridge_node) addDetail(details, "Jalur bridge", `${node.bridged_from_chain || node.chain || "?"} → ${node.bridged_to_chain || "belum diketahui"}`);
@@ -1113,10 +1115,40 @@ function dateTime(value) {
   return Number.isNaN(date.getTime()) ? String(value) : new Intl.DateTimeFormat("id-ID", { dateStyle: "short", timeStyle: "medium", timeZone: "Asia/Jakarta" }).format(date);
 }
 
+function freezeAccountTarget(graph, request) {
+  const node = graph?.nodes?.find(item => item.id === request?.target_node_id);
+  if (!node || String(node.entity_label || "").trim().toLowerCase() !== String(request.institution_name || "").trim().toLowerCase()) return null;
+  const metadata = request.metadata || {};
+  if (request.institution_category === "PUJK" && metadata.target_account_kind === "BANK_ACCOUNT" && node.node_zone === "FIAT_BANK" && node.account && ["MULE", "FINAL_CASHOUT", "FNA_HANDOFF_ACCOUNT"].includes(node.node_type)) return node;
+  const uid = node.metadata?.uid;
+  if (request.institution_category === "PAKD" && metadata.target_account_kind === "PAKD_UID_ACCOUNT" && node.node_zone === "CRYPTO_EXCHANGE_BRIDGE" && ["PAKD_USER_ACCOUNT", "PAKD_RECEIVER_ACCOUNT"].includes(node.node_type) && typeof uid === "string" && uid.trim() && metadata.target_uid === uid) return node;
+  return null;
+}
+
+function accountFreezeRequests(graph) {
+  return (graph?.governance_requests || []).filter(request => freezeAccountTarget(graph, request));
+}
+
 function renderActions() {
   const list = $("#action-list");
-  const requests = state.graph?.governance_requests || [];
-  if (!requests.length) { list.replaceChildren(el("p", "muted small", state.graph?.simulation === false ? "Hasil live tidak menghasilkan tiket freeze otomatis. Identitas, kepemilikan, dan kaitan dengan laporan memerlukan verifikasi institusi." : "Tidak ada tiket rekomendasi: bukti PAKD atau handoff terverifikasi belum tersedia.")); return; }
+  const requests = accountFreezeRequests(state.graph);
+  const selectedNode = state.graph?.nodes.find(node => node.id === state.selected) || state.viewNodes?.find(node => node.id === state.selected);
+  if (selectedNode && !requests.some(request => request.target_node_id === selectedNode.id)) {
+    state.selectedRequestId = null;
+    const linked = requests.find(request => request.target_node_id === selectedNode.metadata?.linked_pakd_account_node_id || (selectedNode.node_type === "P2P_ESCROW" && request.institution_category === "PAKD" && request.metadata.target_uid === selectedNode.metadata?.uid && request.institution_name === selectedNode.entity_label));
+    let note = "Simpul ini tidak memiliki target akun PUJK/PAKD yang terverifikasi untuk permohonan freeze.";
+    if (linked) note = selectedNode.node_type === "P2P_ESCROW"
+      ? "Escrow/order ini adalah bukti saldo yang masih ditahan PAKD. Target permohonan tetap akun internal PAKD berdasarkan UID, sebatas saldo/order terkait."
+      : "Alamat deposit ini adalah bukti setoran. Target freeze adalah akun internal PAKD berdasarkan UID, bukan alamat wallet.";
+    else if (selectedNode.node_zone === "ONCHAIN_WALLET") note = "Wallet on-chain ini hanya untuk penelusuran dan bukti. Wallet bukan target permohonan freeze akun; penelusuran dilanjutkan sampai ditemukan akun PUJK/PAKD yang terverifikasi.";
+    list.replaceChildren(el("p", "scope-note", note));
+    if (linked) {
+      const button = el("button", "button secondary", `Tinjau akun ${linked.institution_name} · UID ${linked.metadata.target_uid}`);
+      button.type = "button"; button.addEventListener("click", () => selectNode(linked.target_node_id)); list.append(button);
+    }
+    return;
+  }
+  if (!requests.length) { list.replaceChildren(el("p", "muted small", state.graph?.simulation === false ? "Hasil live tidak menghasilkan tiket freeze otomatis. Identitas, kepemilikan, dan kaitan dengan laporan memerlukan verifikasi institusi." : "Tidak ada target akun PUJK/PAKD yang terverifikasi untuk permohonan freeze. Wallet on-chain tetap tersedia sebagai bukti penelusuran.")); return; }
   const selectedRequest = requests.find((request) => request.request_id === state.selectedRequestId);
   const request = selectedRequest || requests.find((item) => item.target_node_id === state.selected);
   const selectorLabel = el("label", "governance-target-label", "Pilih target permohonan");
@@ -1126,7 +1158,8 @@ function renderActions() {
     const option = el("option", "", "Pilih rekening / akun berbukti…"); option.value = ""; selector.append(option);
   }
   for (const item of requests) {
-    const option = el("option", "", `${item.institution_name} · ${item.target_node_id} · ${decisionStyle(item).short}`);
+    const target = freezeAccountTarget(state.graph, item);
+    const option = el("option", "", `${item.institution_name} · ${item.institution_category === "PAKD" ? `UID ${item.metadata.target_uid}` : `Rekening ${target.account}`} · ${decisionStyle(item).short}`);
     option.value = item.request_id; option.selected = item.request_id === request?.request_id; selector.append(option);
   }
   selector.addEventListener("change", () => {
@@ -1140,7 +1173,6 @@ function renderActions() {
   state.selectedRequestId = request.request_id;
   const current = decisionStyle(request);
   const metadata = request.metadata || {};
-  const issuerReview = metadata.request_scope === "ISSUER_REVIEW";
   const available = Number(metadata.available_amount_idr || 0);
   const requested = Number(request.requested_amount_idr || 0);
   const busy = state.busyRequests.has(request.request_id);
@@ -1151,6 +1183,8 @@ function renderActions() {
   const details = el("dl", "detail-list");
   addDetail(details, "ID permohonan", request.request_id, "mono");
   addDetail(details, "Kategori institusi", request.institution_category);
+  const target = freezeAccountTarget(state.graph, request);
+  addDetail(details, request.institution_category === "PAKD" ? "Target akun PAKD · UID" : "Target rekening bank", request.institution_category === "PAKD" ? metadata.target_uid : target.account, "mono");
   addDetail(details, "Diminta IASC", idr(request.requested_amount_idr));
   addDetail(details, "Saldo eligible · snapshot demo", idr(available));
   addDetail(details, "Disetujui institusi", idr(request.approved_frozen_amount_idr), "detail-highlight");
@@ -1158,10 +1192,9 @@ function renderActions() {
   addDetail(details, "Catatan keputusan", request.institution_decision_notes);
   addDetail(details, "Waktu keputusan · WIB", request.decision_timestamp ? dateTime(request.decision_timestamp) : null);
   card.append(details);
-  if (metadata.request_scope === "TARGETED_ESCROW") card.append(el("p", "scope-note", "Hold hanya untuk sisa escrow/order terkait. Rekening bisnis merchant tetap aktif; dana yang sudah dilepas tidak dihitung kembali."));
-  if (metadata.request_scope === "ISSUER_REVIEW") card.append(el("p", "scope-note", "Paket DRAFT untuk review issuer/global exchange. Pengiriman tiket tidak menjalankan smart contract; kewenangan eksekusi berada pada institusi terkait."));
+  if (metadata.request_scope === "TARGETED_PAKD_ACCOUNT_HOLD") card.append(el("p", "scope-note", "Target permohonan adalah akun PAKD berdasarkan UID, sebatas saldo/order yang masih dikuasai PAKD. Escrow menjadi bukti pendukung; rekening bisnis merchant tetap aktif."));
   if (request.request_status === "NOT_SENT") {
-    const send = el("button", "button dispatch-button", "📨 Kirim tiket rekomendasi freeze ke institusi");
+    const send = el("button", "button dispatch-button", request.institution_category === "PAKD" ? "📨 Rekomendasikan freeze akun PAKD" : "📨 Rekomendasikan freeze rekening bank");
     send.type = "button"; send.disabled = busy;
     send.addEventListener("click", () => sendFreezeRequest(request));
     card.append(el("p", "governance-stage", "01 · IASC — DISPATCH REKOMENDASI"), send, el("p", "small muted", "Mengirim tiket hanya mengubah status menjadi menunggu keputusan. Nominal disetujui tetap Rp0."));
@@ -1178,7 +1211,7 @@ function renderActions() {
     const amount = el("input"); amount.type = "number"; amount.id = "partial-amount"; amount.min = "0.01"; amount.step = "0.01";
     amount.max = String(Math.max(0, Math.min(available, requested - .01)));
     amount.value = draft.amount ?? String(Math.floor(Math.min(available, requested) * 50) / 100);
-    amount.disabled = busy || issuerReview || requested <= .01 || available <= 0; partialLabel.append(amount);
+    amount.disabled = busy || requested <= .01 || available <= 0; partialLabel.append(amount);
     const partial = el("button", "button decision-partial", "⚠️ Simulasi: freeze sebagian");
     partial.type = "button"; partial.disabled = amount.disabled;
     partial.addEventListener("click", () => { if (amount.reportValidity()) simulateDecision(request, "PARTIAL_FREEZE_BY_INSTITUTION", notes.value, amount.value); });
@@ -1186,8 +1219,7 @@ function renderActions() {
     reject.type = "button"; reject.disabled = busy;
     reject.addEventListener("click", () => simulateDecision(request, "REJECTED_BY_INSTITUTION", notes.value));
     card.append(notesLabel, approve);
-    if (!issuerReview) card.append(partialLabel, partial);
-    else card.append(el("p", "scope-note", "Blacklist issuer membatasi token pada seluruh alamat, bukan nominal sebagian. Callback hanya mensimulasikan keputusan institusi; tidak ada transaksi on-chain dikirim."));
+    card.append(partialLabel, partial);
     card.append(reject);
     if (available <= 0) card.append(el("p", "scope-note", "Snapshot menunjukkan tidak ada saldo eligible. Permohonan ini hanya dapat didemokan sebagai penolakan."));
   } else if (request.request_status !== "NOT_SENT") card.append(el("p", "scope-note", "Keputusan terminal telah dicatat oleh institusi (simulasi). Muat ulang skenario untuk mendemokan hasil lain."));
@@ -1217,6 +1249,7 @@ function applyGovernanceResult(result) {
 }
 
 async function sendFreezeRequest(request) {
+  if (!freezeAccountTarget(state.graph, request)) { toast("Permohonan freeze harus menargetkan rekening bank atau akun PAKD berdasarkan UID yang terverifikasi.", true); return; }
   const traceId = state.graph.trace_id;
   if (state.busyRequests.has(request.request_id)) return;
   state.busyRequests.add(request.request_id); renderActions();
@@ -1231,6 +1264,7 @@ async function sendFreezeRequest(request) {
 }
 
 async function simulateDecision(request, decision, notes, partialAmount) {
+  if (!freezeAccountTarget(state.graph, request)) { toast("Target permohonan bukan akun PUJK/PAKD yang terverifikasi.", true); return; }
   const traceId = state.graph.trace_id;
   if (state.busyRequests.has(request.request_id)) return;
   state.decisionDrafts.set(request.request_id, { ...state.decisionDrafts.get(request.request_id), notes, ...(partialAmount !== undefined ? {amount:partialAmount} : {}) });
@@ -1363,11 +1397,11 @@ async function playFlowStep(index, token) {
   renderFlowStepControls();
   if (!await moveFlowParticles(groups, token)) return false;
   paintAnimationStep(step, true);
-  const target = step.targetIds.find(id => (state.graph.governance_requests || []).some(request => request.target_node_id === id)) || step.targetIds[0];
+  const target = step.targetIds.find(id => accountFreezeRequests(state.graph).some(request => request.target_node_id === id)) || step.targetIds[0];
   if (target) selectNode(target, index === steps.length - 1, true);
   if (index === steps.length - 1) {
-    const requests = (state.graph.governance_requests || []).filter(request => step.targetIds.includes(request.target_node_id));
-    $("#animation-step").textContent += requests.length ? ` · Rekomendasi freeze: ${requests.map(request => `${idr(request.requested_amount_idr)} · ${friendly(request.request_status)}`).join("; ")}` : " · Tinjau bukti dan rekomendasi yang tersedia";
+    const requests = accountFreezeRequests(state.graph).filter(request => step.targetIds.includes(request.target_node_id));
+    $("#animation-step").textContent += requests.length ? ` · Rekomendasi freeze akun: ${requests.map(request => `${request.institution_name} · ${request.metadata.target_uid ? `UID ${request.metadata.target_uid} · ` : ""}${idr(request.requested_amount_idr)} · ${friendly(request.request_status)}`).join("; ")}` : " · Tinjau bukti dan rekomendasi yang tersedia";
     if (state.autoFit) fitGraph();
   }
   return true;

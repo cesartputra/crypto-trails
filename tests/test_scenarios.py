@@ -119,16 +119,14 @@ def test_direct_va_loopback_targets_indodax_decision_authority(trace):
     assert amount(retained[0]["remaining_pakd_balance_idr"]) == 120000000
 
 
-def test_cold_wallet_11000_usdt_is_external_issuer_review_not_direct_freeze(trace):
+def test_cold_wallet_11000_usdt_is_external_tracking_only(trace):
     graph = trace("p2p-dex-cold-wallet")
     assert any("uniswap" in str(node).lower() for node in graph["nodes"])
     cold = next(node for node in graph["nodes"] if node["id"] == "cold")
     assert amount(cold["balance_crypto"]) == 11000
     assert cold["chain"] == "ETHEREUM_ERC20"
-    issuer = next(item for item in graph["governance_requests"] if item["target_node_id"] == cold["id"])
-    assert issuer["institution_category"] == "STABLECOIN_ISSUER_OR_GLOBAL_EXCHANGE"
-    assert amount(issuer["requested_amount_idr"]) == 176000000
-    assert issuer["request_status"] == "NOT_SENT"
+    assert not any(item["target_node_id"] == cold["id"] for item in graph["governance_requests"])
+    assert amount(graph["recoverable_amount_idr"]) == 0
 
 
 @pytest.mark.parametrize("scenario_id,_", SCENARIOS)
@@ -144,15 +142,15 @@ def test_withdrawal_follows_escrow_and_precedes_onchain(trace, scenario_id, _):
             assert datetime.fromisoformat(edge["timestamp"]) >= withdrawal_time
 
 
-def test_golden_period_has_full_potential_but_zero_confirmed_frozen(trace):
+def test_golden_period_only_counts_the_held_pakd_account_balance(trace):
     graph = trace("golden-period")
     escrow = next(node for node in graph["nodes"] if node["node_type"] == "P2P_ESCROW")
     assert amount(escrow["balance_crypto"]) == 3750
-    assert amount(graph["recoverable_amount_idr"]) == 95000000
+    assert amount(graph["recoverable_amount_idr"]) == 60000000
     assert amount(graph["confirmed_frozen_amount_idr"]) == 0
-    escrow_request = next(item for item in graph["governance_requests"] if item["target_node_id"] == escrow["id"])
+    escrow_request = next(item for item in graph["governance_requests"] if item["target_node_id"] == "scammer-uid")
     assert amount(escrow_request["requested_amount_idr"]) == 60000000
-    assert escrow_request["metadata"]["request_scope"] == "TARGETED_ESCROW"
+    assert escrow_request["metadata"]["request_scope"] == "TARGETED_PAKD_ACCOUNT_HOLD"
 
 
 @pytest.mark.parametrize("scenario_id,_", SCENARIOS)
@@ -160,8 +158,7 @@ def test_merchant_business_is_never_target_of_blanket_account_freeze(trace, scen
     graph = trace(scenario_id)
     merchants = {node["id"] for node in graph["nodes"] if node["node_type"] == "P2P_MERCHANT"}
     for request in graph["governance_requests"]:
-        if request["target_node_id"] in merchants:
-            assert request["metadata"]["request_scope"] == "TARGETED_ESCROW"
+        assert request["target_node_id"] not in merchants
 
 
 def test_scenario_evidence_is_deterministic_and_cases_are_independent(trace):
@@ -252,7 +249,7 @@ def test_double_diamond_only_accepts_same_custodial_uid_for_loopback(trace, fiel
 
     graph = trace("double-diamond-loopback")
     account = next(node for node in graph["nodes"] if node["id"] == "scammer-uid")
-    wallet = ScopedMirrorProvider().lookup_wallet("TOKOCRYPTO", account["address"], "ETHEREUM")
+    wallet = ScopedMirrorProvider().lookup_wallet("TOKOCRYPTO", account["metadata"]["deposit_address"], "ETHEREUM")
     wallet[field] = value
     consumer = PAKDAPIConsumer(transport=httpx.MockTransport(lambda request: httpx.Response(200, json={"wallet": wallet})))
     nodes = [TrailNode.model_validate(node) for node in graph["nodes"]]

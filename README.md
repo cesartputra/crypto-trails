@@ -43,7 +43,7 @@ flowchart LR
   S --> R
   E --> R
   R --> T[Tiket rekomendasi IASC]
-  T --> I[PUJK / PAKD / issuer memutuskan]
+  T --> I[PUJK / PAKD memutuskan pada rekening / UID]
 ```
 
 Aplikasi OJK bertindak sebagai **API consumer**, tanpa membuka koneksi SQL ke database PAKD. SQL hanya berada dalam `pakd_scoped_mirror_provider.py`. Demo menggunakan HTTP ASGI dalam satu proses untuk memisahkan provider/consumer; bukan koneksi ke server produksi PAKD. Endpoint provider tetap terlihat pada OpenAPI.
@@ -71,7 +71,7 @@ Kanvas memakai swimlane horizontal per chain, dengan konteks FNA/PAKD bersama di
 
 Ikon pada node on-chain, judul swimlane, kartu dan filter memakai SVG lokal dari [0xa3k5/web3icons](https://github.com/0xa3k5/web3icons), commit `3cce0f390cf902f204a1b3d52f485bcc95d2fe9e`. Aset untuk sembilan chain berada di `static/icons/web3icons/`, beserta atribusi dan lisensi MIT. Tidak ada dependensi npm atau CDN baru. Simbol institusi/peran tetap dipakai pada node bank/PAKD; logo jaringan bukan bukti identitas pemilik wallet.
 
-## Kasus default: Rp180 juta tersebar ke tiga chain
+## Contoh multi-chain: Rp180 juta tersebar ke tiga chain
 
 **BNI → mule BCA → VA Tokocrypto → tiga withdrawal:**
 
@@ -79,9 +79,9 @@ Ikon pada node on-chain, judul swimlane, kartu dan filter memakai SVG lokal dari
 | --- | --- | --- |
 | Bitcoin | Rp70 juta · 0,065 BTC | Initial BTC → wallet perantara → deposit BTC Indodax |
 | Solana | Rp50 juta · 185 SOL | Initial SOL → deposit Pintu → P2P off-ramp ke rekening BRI; saldo akhir eligible Rp45 juta |
-| Ethereum | Rp60 juta · 3.750 USDT | Initial ERC-20 wallet → unhosted wallet; draft permohonan review issuer |
+| Ethereum | Rp60 juta · 3.750 USDT | Initial ERC-20 wallet → unhosted wallet; bukti penelusuran tanpa freeze akun |
 
-Nilai awal cabang berjumlah Rp180 juta. Potensi terminal pada snapshot Rp175 juta: Rp70 juta di PAKD, Rp45 juta saldo BRI dan Rp60 juta exposure USDT. Tidak ada nominal dikonfirmasi sampai callback keputusan simulasi; tidak ada jaminan recovery.
+Nilai awal cabang berjumlah Rp180 juta. Potensi freeze akun pada snapshot Rp115 juta: Rp70 juta di akun PAKD dan Rp45 juta saldo BRI. Exposure USDT Rp60 juta pada wallet eksternal tidak masuk nominal eligible. Tidak ada nominal dikonfirmasi sampai callback keputusan simulasi; tidak ada jaminan recovery.
 
 Alamat, hash, identitas dan hubungan PAKD pada preset adalah sintetis, meskipun sebagian contoh alamat memakai format/alamat publik nyata. Jangan memakai mapping fixture sebagai bukti kepemilikan nasabah nyata. Enam preset sebelumnya juga dipertahankan: P2P full-cycle, direct VA/loopback, DEX/cold wallet, golden period serta dua bridge EVM Ethereum→Arbitrum/BSC. Semua memakai struktur `chain_dispersals` dan provenance scanner.
 
@@ -156,11 +156,11 @@ Garis live berstatus `CANDIDATE_UNVERIFIED`, bukan bukti settlement. Swap, perub
 
 ## Governance
 
-IASC menyiapkan rekomendasi; PUJK/PAKD atau issuer terkait memutuskan dan mengeksekusi tindakan. PoC ini hanya mensimulasikan dispatch dan callback:
+IASC menyiapkan rekomendasi untuk **rekening bank PUJK atau akun internal PAKD yang terverifikasi**. Target PAKD adalah provider + UID, bukan alamat wallet. PUJK/PAKD memutuskan pada akun yang mereka kelola. PoC ini hanya mensimulasikan dispatch dan callback:
 
 `NOT_SENT → SENT_WAITING_DECISION → APPROVED / PARTIAL / REJECTED_BY_INSTITUTION`
 
-Confirmed tetap nol saat tiket dikirim. Persetujuan dibatasi permohonan dan saldo eligible yang teratribusi; keputusan terminal immutable dan replay identik idempoten. Hold P2P hanya pada order terkait. Draft issuer USDT/USDC tidak memakai private key, signing, atau broadcast; pembatasan issuer pada seluruh alamat tidak mendukung freeze nominal parsial. Bitcoin/Solana tidak dianggap memiliki fungsi blacklist issuer universal.
+Confirmed tetap nol saat tiket dikirim. Persetujuan dibatasi permohonan dan saldo eligible yang teratribusi; keputusan terminal immutable dan replay identik idempoten. Saldo escrow/order menjadi bukti pendukung akun UID terkait dan dihitung satu kali; rekening bisnis merchant tidak menjadi target. Cold wallet, unhosted wallet, DEX, bridge, serta alamat deposit tidak bisa menjadi target freeze akun. Mapping alamat deposit yang terverifikasi hanya menghubungkan bukti ke akun internal PAKD. Permohonan issuer pada alamat eksternal tidak dibuat dalam alur freeze akun ini dan tidak menambah potensi recovery.
 
 Evidence packet memuat snapshot FNA, respons API PAKD, rincian withdrawal/cabang, graph dan digest. Seluruh keputusan pada preset tetap simulasi. Handoff manual tanpa snapshot FNA terverifikasi tidak menghasilkan rekomendasi otomatis.
 

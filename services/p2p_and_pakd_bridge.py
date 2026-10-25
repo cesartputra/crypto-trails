@@ -126,7 +126,8 @@ class P2PAndPAKDBridge:
             metadata={**evidence, "withdrawal_timestamp": ramp["withdrawal_timestamp"], "withdrawn_crypto_amount": ramp["crypto_amount"],
                 "partial_withdrawal": bool(D(ramp.get("held_escrow_idr", "0"))), "fees_idr": scenario.get("fees_idr", "0")})
         nodes.append(TrailNode(id="scammer-uid", label=f"Akun PAKD · {ramp['uid']}", node_zone="CRYPTO_EXCHANGE_BRIDGE",
-            node_type="PAKD_USER_ACCOUNT", entity_label=ramp["platform"], crypto_amount=D(ramp["crypto_amount"]),
+            node_type="PAKD_USER_ACCOUNT", entity_label=ramp["platform"], account=ramp["uid"], crypto_amount=D(ramp["crypto_amount"]),
+            balance_crypto=D(ramp.get("held_escrow_idr", "0")) / RATE,
             amount_idr=D(ramp["crypto_amount"]) * RATE, asset=ramp["asset"], hop=hop + 1,
             metadata={"architecture_zone": PAKD_ZONE, "uid": ramp["uid"], "kyc": {"name": match["kyc_name_masked"], "nik_masked": match["kyc_nik_masked"]},
                 "pakd_internal_record_id": record.record_id, "evidence_source": SOURCE, "mirror_deposit": intake["mirror_deposit"],
@@ -158,20 +159,20 @@ class P2PAndPAKDBridge:
             institution = match["pakd_name"]
             account_node_id = f"pakd-account-{deposit_node.id}"
             nodes.append(TrailNode(id=account_node_id, label=f"Akun PAKD penerima · {institution}",
-                node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_RECEIVER_ACCOUNT", entity_label=institution,
+                node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_RECEIVER_ACCOUNT", entity_label=institution, account=match["user_uid"],
                 amount_idr=deposit_node.balance_crypto * RATE, crypto_amount=deposit_node.crypto_amount,
                 balance_crypto=deposit_node.balance_crypto, asset=deposit_node.asset, hop=deposit_node.hop + 1,
                 metadata={**metadata, "architecture_zone": PAKD_ZONE, "recovery_institution": "PAKD",
                     "linked_deposit_address": deposit_node.address, "kyc_nik_masked": metadata.get("kyc_nik_masked", scenario["onramp"]["kyc"]["nik_masked"]),
                     "evidence_source": SOURCE}))
-            if deposit_node.node_type == "DIRECT_EXCHANGE_DEPOSIT":
-                records.append(PAKDInternalTrailRecord(record_id=f"PAKD-DEPOSIT-{metadata.get('uid', deposit_node.id)}", target_node_id=account_node_id,
-                    pakd_name=institution, intake_mechanism="ONCHAIN_DEPOSIT", pakd_user_uid=metadata["uid"],
-                    kyc_nik_masked=metadata.get("kyc_nik_masked", scenario["onramp"]["kyc"]["nik_masked"]), fiat_in_idr=D(0),
-                    crypto_purchased_token=deposit_node.asset, crypto_purchased_amount=deposit_node.crypto_amount,
-                    remaining_pakd_balance_idr=deposit_node.balance_crypto * RATE, withdrawal_status="STILL_IN_PAKD_WALLET",
-                    blockchain_network=deposit_node.chain,
-                    metadata={"deposit_address": deposit_node.address, "evidence_source": SOURCE}))
+            records.append(PAKDInternalTrailRecord(record_id=f"PAKD-DEPOSIT-{metadata.get('uid', deposit_node.id)}", target_node_id=account_node_id,
+                pakd_name=institution, intake_mechanism="ONCHAIN_DEPOSIT", pakd_user_uid=metadata["uid"],
+                kyc_nik_masked=metadata.get("kyc_nik_masked", scenario["onramp"]["kyc"]["nik_masked"]), fiat_in_idr=D(0),
+                crypto_purchased_token=deposit_node.asset, crypto_purchased_amount=deposit_node.crypto_amount,
+                remaining_pakd_balance_idr=deposit_node.balance_crypto * RATE, withdrawal_status="STILL_IN_PAKD_WALLET",
+                blockchain_network=deposit_node.chain,
+                metadata={"deposit_address": deposit_node.address, "evidence_source": SOURCE}))
+
             deposit_node.metadata.pop("recovery_institution", None)
             deposit_node.metadata["linked_pakd_account_node_id"] = account_node_id
             incoming = [edge for edge in edges if edge.target == deposit_node.id and edge.timestamp]
@@ -263,7 +264,7 @@ class P2PAndPAKDBridge:
             "handoff_scope": "COMPOSITE_CASE_SUMMARY", "mirror_deposit": match, "chronological_step": 3,
             "uid": ramp["uid"], "same_pakd_account": True}
         nodes.append(TrailNode(id="scammer-uid", label=f"Akun PAKD Tokocrypto (UID: {ramp['uid']} - NIK: {ramp['kyc']['nik_masked']})",
-            node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_USER_ACCOUNT", entity_label=ramp["platform"],
+            node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_USER_ACCOUNT", entity_label=ramp["platform"], account=ramp["uid"],
             amount_idr=handoff.fiat_transfer_amount_idr, crypto_amount=D(ramp["crypto_amount"]), asset=ramp["asset"],
             chain=ramp["chain"], hop=3, chronological_step=3,
             metadata={**evidence, "architecture_zone": PAKD_ZONE, "kyc": {"name": match["kyc_name_masked"], "nik_masked": match["kyc_nik_masked"]}}))
@@ -318,6 +319,8 @@ class P2PAndPAKDBridge:
         evidence = {"evidence_source": SOURCE, "simulation": True, "same_uid_loopback": True,
             "full_circle_loopback_pct": "100", "returned_crypto_amount": str(returned), "chronological_step": 6,
             "mirror_wallet": match, "deposit_address": deposit["address"], "inventory_counted_once": True}
+        account.address = None
+        account.account = ramp["uid"]
         account.metadata.update({**evidence, "chronological_step": 3})
         return [], [PAKDInternalTrailRecord(record_id="PAKD-RETURN-"+ramp["uid"], target_node_id=account.id,
             pakd_name=ramp["platform"], intake_mechanism="ONCHAIN_DEPOSIT", pakd_user_uid=ramp["uid"],
@@ -363,7 +366,7 @@ class P2PAndPAKDBridge:
             label="RRN + gateway + nominal + waktu cocok", amount_idr=handoff.fiat_transfer_amount_idr,
             timestamp=intake["timestamp"], metadata={**evidence, "correlation_only": True}))
         nodes.append(TrailNode(id="scammer-uid", label=f"Akun PAKD · {ramp['uid']} · {len(match['chains_used'])} chain",
-            node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_USER_ACCOUNT", entity_label=ramp["platform"],
+            node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_USER_ACCOUNT", entity_label=ramp["platform"], account=ramp["uid"],
             amount_idr=handoff.fiat_transfer_amount_idr, hop=gateway.hop + 2,
             metadata={**evidence, "architecture_zone": PAKD_ZONE, "uid": ramp["uid"],
                 "kyc": {"name": match["kyc_name_masked"], "nik_masked": match["kyc_nik_masked"]},
@@ -399,7 +402,7 @@ class P2PAndPAKDBridge:
                 "architecture_zone": PAKD_ZONE, "recovery_institution": "PAKD", "kyc_nik_masked": match["nik_masked"],
                 "linked_deposit_address": deposit.address, "attributed_recoverable_amount_idr": str(remaining)}
             nodes.append(TrailNode(id=account_id, label=f"Akun PAKD penerima · {match['pakd_name']}",
-                node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_RECEIVER_ACCOUNT", entity_label=match["pakd_name"],
+                node_zone="CRYPTO_EXCHANGE_BRIDGE", node_type="PAKD_RECEIVER_ACCOUNT", entity_label=match["pakd_name"], account=match["user_uid"],
                 amount_idr=remaining, crypto_amount=deposit.crypto_amount, balance_crypto=deposit.balance_crypto,
                 chain=deposit.chain, chain_family=deposit.chain_family, scanner_provider=deposit.scanner_provider,
                 chain_branch=deposit.chain_branch, asset=deposit.asset, hop=deposit.hop + 1, metadata=metadata))

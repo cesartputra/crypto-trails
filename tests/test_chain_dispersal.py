@@ -40,7 +40,7 @@ def test_default_graph_keeps_branch_units_and_eligible_money_separate(trace, cli
     assert sum(D(e["amount_idr"]) for e in withdrawals) == D(180000000)
     assert sum(D(r["fiat_in_idr"]) for r in graph["pakd_trails"] if r["withdrawal_status"] == "WITHDRAWN_ONCHAIN") == D(180000000)
     assert D(graph["total_traced_usdt"]) == D(3750)
-    assert D(graph["recoverable_amount_idr"]) == D(175000000)
+    assert D(graph["recoverable_amount_idr"]) == D(115000000)
     assert D(graph["confirmed_frozen_amount_idr"]) == 0
     assert D(nodes["btc-deposit"]["balance_crypto"]) == D("0.065")
     assert D(nodes["sol-deposit"]["balance_crypto"]) == 0
@@ -49,14 +49,11 @@ def test_default_graph_keeps_branch_units_and_eligible_money_separate(trace, cli
     assert D(nodes["final-sol-bank"]["amount_idr"]) == D(50000000)
     assert D(nodes["final-sol-bank"]["metadata"]["available_balance_idr"]) == D(45000000)
     eligible = {r["target_node_id"]: D(r["requested_amount_idr"]) for r in graph["governance_requests"] if D(r["requested_amount_idr"]) > 0}
-    assert eligible == {"pakd-account-btc-deposit": D(70000000), "final-sol-bank": D(45000000), "eth-cold": D(60000000)}
+    assert eligible == {"pakd-account-btc-deposit": D(70000000), "final-sol-bank": D(45000000)}
     assert all(r["request_status"] == "NOT_SENT" for r in graph["governance_requests"])
     sell = next(e for e in graph["edges"] if e["id"] == "sol-offramp-order")
     assert sell["asset"] == "SOL" and D(sell["crypto_amount"]) == D(185)
-    issuer = next(r for r in graph["governance_requests"] if r["target_node_id"] == "eth-cold")
-    packet = client.post("/api/v1/governance/send-freeze-request", json={"trace_id": graph["trace_id"], "request_id": issuer["request_id"]})
-    assert packet.status_code == 200
-    assert packet.json()["evidence_packet"]["issuer_request"]["token"] == "USDT"
+    assert "eth-cold" not in {r["target_node_id"] for r in graph["governance_requests"]}
 
 
 @pytest.mark.parametrize("mutation", ["wrong_family", "wrong_uid", "duplicate_id", "overallocated", "nonfinite"])

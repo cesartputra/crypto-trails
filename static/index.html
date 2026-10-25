@@ -6,11 +6,11 @@
   <meta name="theme-color" content="#f5f4f0">
   <title>Crypto Trails · Intelligence Workspace</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'%3E%3Crect width='40' height='40' rx='10' fill='%2325241f'/%3E%3Cg fill='none' stroke='%23fff' stroke-width='2'%3E%3Ccircle cx='12' cy='11' r='4'/%3E%3Ccircle cx='29' cy='15' r='4'/%3E%3Ccircle cx='14' cy='30' r='4'/%3E%3Cpath d='m16 12 9 2M13 15l1 11m4 2 8-10'/%3E%3C/g%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/static/styles.css?v=20261025-chronology">
+  <link rel="stylesheet" href="/static/styles.css?v=20261025-account-freeze">
   <script id="d3-library" src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js" async></script>
-  <script src="/static/arkham_engine.js?v=20261025-chronology" defer></script>
-  <script src="/static/forensic_graph.js?v=20261025-chronology" defer></script>
-  <script src="/static/app.js?v=20261025-chronology" defer></script>
+  <script src="/static/arkham_engine.js?v=20261025-account-freeze" defer></script>
+  <script src="/static/forensic_graph.js?v=20261025-account-freeze" defer></script>
+  <script src="/static/app.js?v=20261025-account-freeze" defer></script>
 </head>
 <body>
   <div class="app-shell">
@@ -180,7 +180,7 @@
           <section id="inspector" class="inspector"><div class="inspector-empty"><span>⌖</span><h3>Inspeksi simpul</h3><p>Pilih rekening, escrow, atau wallet pada grafik untuk melihat bukti.</p></div></section>
           <section class="risk-assessment" aria-label="Indikator risiko"><div class="risk-heading"><span>Indikator risiko</span><strong id="risk-value">Belum dinilai</strong></div><div class="risk-track"><span id="risk-meterfill"></span></div><div class="risk-scale"><span>Rendah</span><span>Sedang</span><span>Tinggi</span></div><p id="risk-tier" class="risk-tier">Belum dinilai</p><p id="risk-note" class="risk-note">Skor akan tampil bila tersedia dalam data yang dipilih.</p></section>
       <article class="metric confirmed-metric"><span class="metric-label">DISETUJUI INSTITUSI <span class="metric-symbol">✓</span></span><strong id="metric-confirmed">—</strong><small id="metric-confirmed-note">Belum ada keputusan freeze</small></article>
-          <section class="action-section governance-section"><div class="section-caption">REKOMENDASI & KEPUTUSAN <span class="tiny-tag">SIMULASI</span></div><div id="action-list"></div><p class="action-disclaimer">IASC mengirim rekomendasi dan bukti. Keputusan freeze dilakukan masing-masing PUJK/PAKD. Seluruh dispatch dan callback di lab bersifat simulasi.</p></section>
+          <section class="action-section governance-section"><div class="section-caption">FREEZE AKUN & KEPUTUSAN <span class="tiny-tag">SIMULASI</span></div><div id="action-list"></div><p class="action-disclaimer">Target adalah rekening bank atau akun internal PAKD berdasarkan UID yang terverifikasi. Alamat wallet menjadi bukti penelusuran. Keputusan dilakukan PUJK/PAKD; dispatch dan callback di lab bersifat simulasi.</p></section>
         </div>
       </aside>
       </div>

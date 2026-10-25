@@ -219,7 +219,7 @@ async def trace_report(handoff: FNAMoneyTrailHandoffInput):
     recoverable = min(handoff.fiat_transfer_amount_idr, sum((D(r.metadata["available_amount_idr"]) for r in requests), D(0)))
     warnings = ["DEMO: snapshot FNA, Scoped Mirror API PAKD, identitas/KYC tersamarkan, ledger on-chain, saldo dan tx_hash adalah sintetis; tidak ada konektor operasional FNA/IASC/bank/PAKD. Gunakan Live Wallet Tracker untuk transaksi mainnet asli.",
         "Modul ini menerima handoff downstream FNA dan menambahkan PAKD Trails serta Multichain & Bridge Trails; tidak menggantikan pelacakan PUJK oleh FNA.",
-        "IASC hanya merekomendasikan penundaan. Keputusan dan pelaksanaan freeze berada pada masing-masing PUJK/PAKD atau issuer terkait.",
+        "IASC hanya merekomendasikan penundaan. Keputusan dan pelaksanaan freeze berada pada masing-masing PUJK/PAKD terkait; wallet eksternal hanya menjadi bukti penelusuran.",
         "Nilai potensial berbeda dari nominal disetujui institusi. Pengiriman tiket tidak membekukan dana; seluruh callback keputusan di sini simulasi.",
         "Probabilitas recovery dan taint memakai asumsi fixture, bukan kepastian pidana, prediksi terkalibrasi atau jaminan pengembalian dana."]
     if scenario.get("fees_idr"):
@@ -349,8 +349,10 @@ async def dispatch_freeze_request(payload: SendFreezeRequest):
     try:
         if request.request_id not in state["packets"]:
             packet = build_evidence_packet(graph, request)
-            send_request(graph, request)
+            send_request(graph, request, packet)
             state["packets"][request.request_id] = packet
+        else:
+            send_request(graph, request, state["packets"][request.request_id])
     except ValueError as exc:
         raise HTTPException(422, str(exc)) from exc
     return {"request": request, "simulation": True,
@@ -364,7 +366,7 @@ async def simulate_institution_decision(payload: SimulateInstitutionDecisionInpu
     graph = state["graph"]
     request = require_governance_request(state, payload.request_id)
     try:
-        decide_request(graph, request, payload)
+        decide_request(graph, request, payload, state["packets"].get(request.request_id))
     except GovernanceConflict as exc:
         raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
